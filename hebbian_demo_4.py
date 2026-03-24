@@ -1,0 +1,1112 @@
+import streamlit as st
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+from hopfield_algorithm import (
+    generate_modular_problem,
+    true_energy,
+    run_baseline,
+    run_with_learning,
+    analyse_results,
+)
+
+
+# ─── UI ─────────────────────────────────────────────────────
+
+st.set_page_config(page_title="Self-Modelling Hopfield Network", layout="wide")
+st.title("Self-Modelling: How a Network Learns to Optimise")
+st.caption(
+    "Demonstrating the mechanism from Watson, Buckley & Mills "
+    "— *Optimisation in Self-modelling Complex Adaptive Systems* "
+    "([Complexity, 2011](https://doi.org/10.1002/cplx.20346))"
+)
+
+# ─── INTRODUCTION ───────────────────────────────────────────
+# (rendered as a function so it always reflects the current slider values)
+def _render_intro():
+    _n_mod = st.session_state.get("n_modules", 30)
+    _mod_sz = st.session_state.get("module_size", 5)
+    _total = _n_mod * _mod_sz
+    _bias = st.session_state.get("positive_bias", 80)
+    with st.expander("How it works — click to read the full explanation"):
+        st.markdown(f"""
+We have **{_total} binary switches**, each ON (+1) or OFF (−1). Every pair
+of switches is joined by a **connection** — a single number. A **positive**
+connection between switches A and B means "A and B prefer to be the same"
+(both ON or both OFF). A **negative** connection means "A and B prefer to be
+different" (one ON, one OFF). The **size** of the number says how strong
+that preference is: +1.0 is a strong push to agree; +0.01 is a
+barely-noticeable nudge.
+
+**What is the network trying to do?** Each connection expresses one
+preference between one pair of switches — and it's **symmetrical**: if the
+A–B connection says "agree," that applies equally whether you're asking
+"what should A do?" or "what should B do?" But with
+{_total * (_total - 1) // 2:,} connections in total, they **contradict each
+other**. Here's how:
+
+When switch A is being updated, each neighbour sends a **signal** equal to
+(connection strength) × (that neighbour's current state). The sign of the
+signal tells A what to do:
+
+- B is ON (+1), connection A–B is **positive** ("agree") → signal = **+1**
+  → B is pushing A toward ON.
+- C is ON (+1), connection A–C is **negative** ("disagree") → signal =
+  **−1** → C is pushing A toward OFF.
+
+B says "be ON." C says "be OFF." **That's the conflict** — and A has to
+pick one. Multiply this across {_total - 1} connections per switch, and
+there is no arrangement that makes every connection happy simultaneously.
+The challenge is to find the arrangement that **satisfies as many
+preferences as possible, weighted by their strengths**.
+
+We measure this with a number called the **energy**. For each connection,
+if the two switches are doing what that connection wants (e.g. both ON when
+the connection is positive), that connection is *satisfied* and contributes
+a negative amount to the energy — pulling it down. If they're doing the
+opposite, that connection is *frustrated* and pushes the energy up. The
+total energy is the sum across all {_total * (_total - 1) // 2:,}
+connections. So **lower energy = more preferences satisfied overall**. The
+network's job is to **minimise energy** — which means finding the best
+compromise across all those conflicting preferences.
+
+This is *not* pattern recall (there is no stored target to recover). Nobody
+knows what the best arrangement looks like in advance — it is a
+combinatorial optimisation puzzle over 2^{_total} possible arrangements.
+
+The switches are arranged in **{_n_mod} groups of {_mod_sz}**. Every pair of
+switches still has its own individual connection — **including pairs in
+different groups**. The only difference is the strength:
+
+- **Within a group** (e.g. switches 1-2, 1-3, 2-3 inside the same group of
+  {_mod_sz}): each connection has magnitude
+  **{st.session_state.get('intra_strength', 1.0)}** — a strong pull.
+- **Between groups** (e.g. switch 2 in group A ↔ switch 14 in group C):
+  each connection has magnitude
+  **{st.session_state.get('inter_strength', 0.01)}** — a very weak pull.
+
+There is **no group-level computation** — groups are not treated as
+single nodes. Each of the {_total} switches talks to every other switch
+individually. With {_mod_sz} switches per group, there are
+{_mod_sz * (_mod_sz - 1) // 2} connections inside each group, and each
+switch also has its own weak connection to each of the {_total - _mod_sz}
+switches in other groups. That's {_total - _mod_sz} weak connections per
+switch — so the weak inter-group connections vastly outnumber the strong
+intra-group ones, and their collective effect matters.
+
+**Why groups?** This is the key to the whole demonstration. Within a group,
+the strong connections are easy for switches to satisfy locally — every
+group quickly finds a stable internal arrangement. But the many weak
+connections *between* groups are hard to coordinate, because no individual
+switch feels much pressure from any one of them.
+
+**The {_bias}% positive bias:** When the connections are first generated
+(once, before any phase begins), each one is randomly assigned its sign:
+{_bias}% are made positive ("agree") and {100 - _bias}% are made negative
+("disagree"). The **magnitudes** are set by the strength sliders (strong
+within a group, weak between groups). Once generated, these connections
+define the puzzle that all three phases will work on.
+
+This bias isn't about making the problem easy — it's about creating
+*structure*. Because most connections within a group say "agree," switches
+in the same group tend to end up the same way. But there's enough
+randomness that different starting arrangements settle into *different*
+locally-stable patterns.
+
+This demo runs the system in **three phases**, all working on the same
+set of connections:
+
+1. **Without learning (baseline)** — the network tries many random starting
+   arrangements. Here is exactly what happens inside one "relaxation":
+
+   We start with all {_total} switches set to random ON/OFF values.
+   Then we repeat the following single action
+   **{st.session_state.get('tau_multiplier', 10) * _total:,} times in a row**
+   ({st.session_state.get('tau_multiplier', 10)} × {_total} switches):
+
+   **Pick one switch at random.** Look at the current state of every
+   other switch, multiply each by its connection to the chosen switch,
+   and add them all up. If the total is positive, set the chosen switch
+   to ON (+1). If negative, set it to OFF (−1). **Only this one switch
+   can change; everything else stays put.**
+
+   That's the entire action — choose one switch, update it, done. Then
+   immediately do it again: pick another switch at random (it could be
+   the same one), update it using the **current** states of all the
+   others — including any switch that just changed a moment ago. Each
+   update sees the result of every update before it, so changes cascade:
+   switch 42 flips, which later causes switch 7 to flip (because 7 has
+   a strong connection to 42), which later causes switch 91 to respond,
+   and so on. Over
+   {st.session_state.get('tau_multiplier', 10) * _total:,} of these
+   one-at-a-time updates, the system **settles towards a compromise**
+   where most switches have stopped flipping.
+
+   **Energy is measured once, at the very end** — after all
+   {st.session_state.get('tau_multiplier', 10) * _total:,} updates, we
+   freeze the switches where they are and calculate the total energy
+   (summing over all {_total * (_total - 1) // 2:,} connections: each
+   satisfied preference subtracts from the energy, each frustrated one
+   adds). This single number is the score for this relaxation.
+
+   We record that energy, then **throw away the switch arrangement
+   entirely** and start fresh from a new random one. The **connections
+   never change** throughout this phase — every connection keeps its
+   original sign (agree or disagree) and its original magnitude, exactly
+   as generated. Nothing at all carries from one relaxation to the next.
+   Each attempt is completely independent, like rolling dice again.
+
+   But here's what's interesting: even though each relaxation starts from
+   a different random arrangement, the **same connections** are pulling on
+   the switches every time. If the connection between switches 7 and 23
+   is strong and positive, it pushes them to agree in *every* relaxation —
+   sometimes both ON, sometimes both OFF, but they tend to match. A switch
+   connected to many neighbours that disagree with each other — some
+   pushing it ON, others pushing it OFF — won't settle as consistently. So
+   across hundreds of independent relaxations, **certain patterns keep
+   recurring** — not because anything is being remembered, but because
+   the same fixed connections keep producing similar outcomes. These
+   recurring regularities are exactly what Phase 2 will learn to exploit.
+
+   Because the weak inter-group connections create lots of these
+   tug-of-war situations, the network usually gets *stuck* in a mediocre local
+   arrangement — not terrible, but far from the best possible.
+
+2. **Flat Hebbian learning** — the same switch-by-switch process, but now
+   the connection strengths **are not fixed**. At every single state update
+   (not just at the end), we make a **tiny** adjustment to **every
+   connection in the whole network** — not just the connections of the
+   switch that was just updated. We look at the current state of *all*
+   switches: every pair that are currently the same get a slightly
+   stronger "agree" connection; every pair that are currently different
+   get a slightly stronger "disagree" connection. Between relaxations, **the switch
+   arrangement is still thrown away and randomised** — but the adjusted
+   connection strengths are kept. So the connections are the network's
+   memory: they carry forward what was learned from every previous
+   relaxation. One nudge is almost invisible. But over hundreds of
+   relaxations, the nudges **accumulate** — and they accumulate fastest
+   for the recurring patterns that appear across many different settled
+   arrangements. This gradually reshapes the energy landscape: mediocre
+   solutions get shallower, and good solutions get deeper. Eventually
+   the network reliably finds solutions **better than any it has seen
+   before** — it has *generalised* from many mediocre experiences into
+   something superior.
+
+3. **Unstructured comparison** — what happens when there is no modular
+   structure to exploit? Phases 3 and 4 generate a completely new problem
+   with the same number of switches but **uniform connection strengths**
+   — every pair of switches is connected equally strongly, with no
+   groups at all. Phase 3 runs a baseline (no learning), and Phase 4
+   applies the same Hebbian learning as Phase 2.
+
+   Because the problem has no internal modules, there are no recurring
+   sub-patterns for learning to latch onto. The comparison that matters
+   is the **percentage improvement** learning achieves: on the modular
+   problem learning produces a dramatic gain; on the unstructured
+   problem the gain is much smaller. This shows that **modular structure
+   is what makes Hebbian learning effective**.
+
+   Note: because this uses a *different problem*, the raw energy numbers
+   are not comparable to Phases 1 and 2 — only the improvement ratios
+   are meaningful.
+""")
+
+
+def _render_info_sections():
+    """Render intro + glossary + math expanders (called after results)."""
+    _render_intro()
+    _render_glossary()
+    _render_math()
+
+
+# ─── PLAIN-ENGLISH GLOSSARY ─────────────────────────────────
+def _render_glossary():
+    with st.expander("Glossary — what the jargon means"):
+        st.markdown(r"""
+| Term | What it means |
+|------|---------------|
+| **Constraint** | A rule between two switches, e.g. "switch 3 and switch 7 should be the same." Rules within a group are strong; rules between groups are weak but collectively significant. |
+| **Energy** | A single number measuring how badly the current arrangement violates the constraints. Lower energy = fewer violations = better solution. |
+| **Relaxation** | One "attempt" at solving the problem. The network starts from a random arrangement, then updates **one randomly-chosen switch at a time** for exactly **10 × N** steps (Watson: *"length of each relaxation is 10N state updates"*). By the end, the network has usually settled near a local minimum. |
+| **Local minimum** | A settled arrangement where no *individual* switch can improve things by flipping. It's stable, but it might not be the best overall — just the nearest stable point from where you started. |
+| **Global minimum** | The best possible arrangement across *all* configurations — the one that satisfies the most constraints. With 150 switches this is extremely hard to find. |
+| **Basin of attraction** | The set of all random starting points that lead to the same settled arrangement. Bigger basin = more starting points lead there = this arrangement is found more often. |
+| **Hebbian learning** | "What fires together, wires together." Applied **concurrently at every state update** during relaxation — not just at the end. Each tiny nudge strengthens the connection between switches that are currently in the same state. |
+| **Attractor** | Another word for a local minimum — a stable arrangement that the system is "attracted" toward during relaxation. |
+| **Hamming space** | A way of thinking about distance between switch arrangements. Two arrangements are "close" if they differ in only a few switches, and "far apart" if they differ in many. The **Hamming distance** between two arrangements is simply the number of switches that are different. For example, if arrangement A and arrangement B disagree on 12 out of 150 switches, they are 12 apart in Hamming space. |
+""")
+
+
+# ─── DETAILED MATH WITH EXAMPLES ───────────────────────────
+def _render_math():
+    with st.expander("The constraint problem (with example)"):
+        st.markdown(r"""
+A **constraint** is just a rule between two switches. For example:
+"switch 1 and switch 2 should be the same" or "switch 1 and switch 3
+should be different." Every pair of switches has exactly one such rule,
+assigned randomly. With 100 switches, that gives us ~5,000 rules.
+The challenge: satisfy as many of these rules as possible *at the same
+time*.
+
+Mathematically, each constraint is a number $\alpha_{ij}$:
+Each pair of switches $(i, j)$ has a constraint $\alpha_{ij}$:
+
+| $\alpha_{ij}$ | Meaning |
+|:-:|---------|
+| $+1$ | switches $i$ and $j$ should be the **same** |
+| $-1$ | switches $i$ and $j$ should be **different** |
+
+**Example -- 3 switches:**
+
+| Pair | $\alpha$ | Rule |
+|------|:--------:|------|
+| 1-2  | $+1$     | same |
+| 1-3  | $-1$     | different |
+| 2-3  | $-1$     | different |
+
+Try $s = [+1,\; +1,\; -1]$:
+
+- Switches 1 and 2 are the same -- constraint says "same" -- **satisfied**
+- Switches 1 and 3 are different -- constraint says "different" -- **satisfied**
+- Switches 2 and 3 are different -- constraint says "different" -- **satisfied**
+
+All 3 constraints satisfied! But with 100 switches and ~5,000 random
+constraints, satisfying everything is usually impossible. We want to
+satisfy **as many as we can**.
+""")
+
+    with st.expander("Energy -- measuring solution quality"):
+        st.markdown(r"""
+We need a single number that tells us "how good is this arrangement?"
+That number is called **energy**. It adds up the result of every
+constraint: satisfied constraints push the number down, violated ones push
+it up. So **lower energy = better solution**. The worst possible energy
+would mean every constraint is violated; the best would mean every
+constraint is satisfied.
+
+The formula:
+
+$$E = -\sum_{i < j} \alpha_{ij} \; s_i \; s_j$$
+
+Each term $\alpha_{ij} \, s_i \, s_j$ equals:
+
+- $+1$ when the constraint is **satisfied** (pushes energy *down*)
+- $-1$ when it's **violated** (pushes energy *up*)
+
+**Example:** $s = [+1,\; +1,\; -1]$ with the constraints above:
+
+| Pair | $\alpha_{ij}$ | $s_i \times s_j$ | Product | Satisfied? |
+|------|:-:|:-:|:-:|:-:|
+| 1-2  | $+1$ | $(+1)(+1) = +1$ | $+1$ | Yes |
+| 1-3  | $-1$ | $(+1)(-1) = -1$ | $+1$ | Yes |
+| 2-3  | $-1$ | $(+1)(-1) = -1$ | $+1$ | Yes |
+
+$E = -(1 + 1 + 1) = -3$ -- the lowest possible for this problem.
+
+A bad state $s = [+1,\; -1,\; +1]$:
+
+| Pair | $\alpha_{ij}$ | $s_i \times s_j$ | Product |
+|------|:-:|:-:|:-:|
+| 1-2  | $+1$ | $(+1)(-1) = -1$ | $-1$ |
+| 1-3  | $-1$ | $(+1)(+1) = +1$ | $-1$ |
+| 2-3  | $-1$ | $(-1)(+1) = -1$ | $+1$ |
+
+$E = -(-1 -1 +1) = +1$ -- higher energy, worse solution.
+""")
+
+    with st.expander("Relaxation — letting the system settle"):
+        st.markdown(r"""
+**Relaxation** means letting the system settle on its own, with no
+outside intervention. At each step, **one switch is picked at random** and
+updated: it looks at all its neighbours' current states and the connection
+strengths, and flips (or stays) accordingly. This repeats for exactly
+$\tau = {st.session_state.get('tau_multiplier', 10)}N$ steps — e.g. {st.session_state.get('tau_multiplier', 10) * 150:,} steps for 150 switches.
+
+The update rule (Watson Eq. 1):
+
+$$s_i \leftarrow \operatorname{sign}\!\left(\sum_j w_{ij}\, s_j\right)$$
+
+In words: "pick a switch at random. Add up all the signals from other
+switches (each weighted by the connection strength). If the total is
+positive, set it to $+1$. If negative, set it to $-1$."
+
+This is **asynchronous** update — only one switch changes at a time, using
+the most up-to-date values of all its neighbours.
+
+**Example:** Starting from $s = [+1,\; -1,\; +1]$ (the bad state):
+
+Switch 1 is picked. It checks its neighbours:
+
+$$w_{12}\, s_2 + w_{13}\, s_3 = (+1)(-1) + (-1)(+1) = -2$$
+
+Since $-2 < 0$, switch 1 flips to $-1$. The state is now $[-1,\; -1,\; +1]$.
+
+Next, another switch is picked at random. Eventually, after many such
+steps, the network has settled near a local minimum — a stable arrangement
+where individual switches have little incentive to flip.
+
+**The problem:** from different random starts, the network falls into
+**different** local minima. With 150 switches, there are many such minima,
+and most are mediocre. The global optimum is just one among many, and
+plain relaxation rarely finds it.
+""")
+
+    with st.expander("Hebbian learning -- tiny nudges that accumulate"):
+        st.markdown(r"""
+Once the system has settled, we look at the result and make a **tiny**
+adjustment to the connection strengths. The rule is simple: if two switches
+ended up in the same state (both ON or both OFF), strengthen the
+"agree" connection between them very slightly. If they ended up in
+different states (one ON, one OFF), strengthen the "disagree" connection
+slightly. One adjustment is almost invisible. But after hundreds of
+trials, the adjustments **accumulate** -- especially for pairs of switches
+that *consistently* end up the same way across many different settled
+arrangements.
+
+The formula:
+
+$$\Delta w_{ij} = \delta \cdot s_i \cdot s_j \qquad (\delta \text{ is very small})$$
+
+This slightly **strengthens** connections between switches that ended up in
+the same state, and slightly **weakens** connections between switches that
+ended up different.
+
+**Example:** Network settled to $s = [-1,\; -1,\; +1]$:
+
+| Pair | $s_i \cdot s_j$ | $\Delta w_{ij}$ | Effect |
+|------|:-:|:-:|---------|
+| 1-2  | $(-1)(-1) = +1$ | $+\delta$ | Slightly more "want same" |
+| 1-3  | $(-1)(+1) = -1$ | $-\delta$ | Slightly more "want different" |
+| 2-3  | $(-1)(+1) = -1$ | $-\delta$ | Slightly more "want different" |
+
+Individually these nudges are tiny. But they **accumulate** over hundreds
+of relaxations, and they accumulate **faster** for switch-pairs whose
+relationship is *consistent* across many different local minima.
+""")
+
+    with st.expander("The key insight — why better solutions win"):
+        st.markdown(r"""
+Remember: a **basin of attraction** is the set of starting points that
+lead to a particular settled arrangement. A bigger basin means more
+random starts end up there. Think of it as how "easy to find" a
+particular solution is.
+
+Two facts combine:
+
+**Fact 1:** Better solutions (lower energy) tend to have **bigger basins**.
+So better solutions are found more often by pure chance.
+
+**Fact 2:** Solutions found more often accumulate more Hebbian nudges,
+which makes their basins **even bigger**.
+
+Together this creates a positive feedback loop:
+
+> Better solutions $\rightarrow$ visited more often $\rightarrow$ reinforced
+> more $\rightarrow$ basins grow $\rightarrow$ visited even more
+> $\rightarrow$ reinforced even more $\rightarrow$ ... $\rightarrow$ one
+> attractor dominates
+
+Because of Fact 1, the winner tends to be a **near-optimal** solution.
+
+**The remarkable part:** the network also finds solutions it has **never
+visited before**. Across many mediocre local minima, certain sub-patterns
+recur ("switches 7 and 23 usually agree"). The Hebbian learning
+accumulates these correlations and combines them into *new* attractors
+representing superior solutions. The network **generalises** from
+experience rather than simply memorising past results.
+""")
+
+
+# ─── USER CONTROLS ───────────────────────────────────────
+# ─── WATSON DEFAULTS ────────────────────────────────────────
+_WATSON_DEFAULTS = {
+    "n_modules": 30,
+    "module_size": 5,
+    "intra_strength": 1.0,
+    "inter_strength": 0.01,
+    "positive_bias": 80,
+    "num_relaxations": 300,
+    "tau_multiplier": 10,
+    "delta": 0.00025,
+}
+
+# Initialise defaults once (before any widget is created)
+for _k, _v in _WATSON_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+with st.sidebar:
+    st.header("Controls")
+
+    if st.button("Reset to Watson defaults"):
+        for k, v in _WATSON_DEFAULTS.items():
+            st.session_state[k] = v
+        st.rerun()
+
+    st.subheader("Problem structure")
+    N_MODULES = st.slider(
+        "Number of modules",
+        min_value=2,
+        max_value=60,
+        step=1,
+        key="n_modules",
+        help=(
+            "Default **30**. "
+            "More modules means more inter-group coordination is needed, "
+            "making the problem harder for local search but giving "
+            "learning more structure to exploit."
+        ),
+    )
+    MODULE_SIZE = st.slider(
+        "Switches per module",
+        min_value=2,
+        max_value=20,
+        step=1,
+        key="module_size",
+        help=(
+            "Default **5**. "
+            "Larger modules create more internal structure within each "
+            "group. The total number of switches (modules \u00d7 size) "
+            "also affects how long each run takes."
+        ),
+    )
+    INTRA_STRENGTH = st.slider(
+        "Intra-module constraint strength",
+        min_value=0.1,
+        max_value=5.0,
+        step=0.1,
+        format="%.1f",
+        key="intra_strength",
+        help=(
+            "Default **1.0**. "
+            "Stronger intra-module constraints mean each group's "
+            "internal arrangement is resolved quickly and reliably "
+            "during settling."
+        ),
+    )
+    INTER_STRENGTH = st.slider(
+        "Inter-module constraint strength",
+        min_value=0.001,
+        max_value=1.0,
+        step=0.001,
+        format="%.3f",
+        key="inter_strength",
+        help=(
+            "Default **0.01**. "
+            "Weak inter-group constraints are individually negligible but "
+            "collectively significant \u2014 this is what makes the problem "
+            "hard for local search and interesting for learning."
+        ),
+    )
+    POSITIVE_BIAS = st.slider(
+        "Positive constraint bias (%)",
+        min_value=50,
+        max_value=100,
+        step=5,
+        key="positive_bias",
+        help=(
+            "Default **80%**. "
+            "A bias toward positive (\"agree\") connections creates "
+            "consistency in the problem, increasing the likelihood "
+            "that local optima share common sub-patterns. "
+            "At 50% there is no bias and learning has little to "
+            "work with."
+        ),
+    )
+
+    st.subheader("Experiment")
+    TAU_MULT = st.slider(
+        "Relaxation length multiplier",
+        min_value=1,
+        max_value=50,
+        step=1,
+        key="tau_multiplier",
+        help=(
+            "Default **10**. "
+            "Each relaxation runs for this number × N steps. "
+            "Higher values give the network more time to settle "
+            "each attempt, but each relaxation takes longer."
+        ),
+    )
+    NUM_RELAXATIONS = st.slider(
+        "Relaxations per phase",
+        min_value=100,
+        max_value=20000,
+        step=50,
+        key="num_relaxations",
+        help=(
+            "Default **300**. "
+            "Both phases run this many times, so the comparison "
+            "is fair. More relaxations give the system more chances "
+            "to explore, but take longer to run."
+        ),
+    )
+    DELTA = st.slider(
+        "Learning rate (\u03b4)",
+        min_value=0.00005,
+        max_value=0.005,
+        step=0.00005,
+        format="%.5f",
+        key="delta",
+        help=(
+            "Default **0.00025**. This is the *numerator*; the actual "
+            "per-update rate is \u03b4 / (\u03c4). "
+            "A tiny value means the network accumulates experience slowly "
+            "and samples many different solutions before committing \u2014 "
+            "this generally gives the best results. A larger value "
+            "risks locking onto a mediocre early solution."
+        ),
+    )
+
+RNG = np.random.default_rng()
+
+# ─── UI HELPERS ─────────────────────────────────────────────
+def state_to_img(state, n, px=10):
+    n_side = int(np.ceil(np.sqrt(n)))
+    n_side_y = int(np.ceil(n / n_side))
+    pad = n_side * n_side_y - n
+    padded = np.concatenate([state, np.zeros(pad)]) if pad > 0 else state
+    grid = ((padded.reshape((n_side_y, n_side)) + 1) * 127.5).astype(np.uint8)
+    img = Image.fromarray(grid)
+    img = img.convert('L')
+    return img.resize((n_side * px, n_side_y * px), resample=Image.NEAREST)
+
+# ─── RUN ────────────────────────────────────────────────────
+def _run_experiment(run):
+  if run:
+    # Read current slider values from session state (always fresh,
+    # even during a fragment-only re-run).
+    n_modules = st.session_state.n_modules
+    module_size = st.session_state.module_size
+    intra_strength = st.session_state.intra_strength
+    inter_strength = st.session_state.inter_strength
+    positive_bias = st.session_state.positive_bias
+    num_relaxations = st.session_state.num_relaxations
+    delta = st.session_state.delta
+
+    tau_multiplier = st.session_state.tau_multiplier
+
+    N = n_modules * module_size
+    N_PAIRS = N * (N - 1) // 2
+    TAU = tau_multiplier * N
+    DELTA_PER_UPDATE = delta / TAU
+
+    alpha = generate_modular_problem(
+        n_modules, module_size, intra_strength,
+        inter_strength, positive_bias, RNG,
+    )
+
+    n_intra = n_modules * (module_size * (module_size - 1) // 2)
+    n_inter = N_PAIRS - n_intra
+
+    with st.status("Running experiment...", expanded=True) as status:
+        status.update(label="Phase 1: relaxing without learning...", state="running")
+        energies_base, best_e_base, best_s_base, all_states_base = run_baseline(
+            alpha, num_relaxations, RNG, tau=TAU,
+        )
+
+        status.update(label="Phase 2: relaxing with Hebbian learning...", state="running")
+        energies_learn, best_e_learn, best_s_learn, all_states_learn = run_with_learning(
+            alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
+        )
+
+        status.update(label="Phase 3: baseline without groups...", state="running")
+        # Generate an unstructured problem: same N, same bias,
+        # but all connections have the same strength (no modules).
+        uniform_strength = (intra_strength + inter_strength) / 2
+        alpha_flat = generate_modular_problem(
+            1, N, uniform_strength, uniform_strength,
+            positive_bias, RNG,
+        )
+        energies_unstruct_base, best_e_unstruct_base, best_s_unstruct_base, all_states_unstruct_base = run_baseline(
+            alpha_flat, num_relaxations, RNG, tau=TAU,
+        )
+
+        status.update(label="Phase 4: Hebbian learning without groups...", state="running")
+        energies_unstruct, best_e_unstruct, best_s_unstruct, all_states_unstruct = run_with_learning(
+            alpha_flat, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
+        )
+
+        status.update(label="Experiment complete!", state="complete", expanded=False)
+
+    # Store everything in session state so results survive reruns.
+    st.session_state.results = {
+        'N': N,
+        'n_modules': n_modules,
+        'module_size': module_size,
+        'intra_strength': intra_strength,
+        'inter_strength': inter_strength,
+        'positive_bias': positive_bias,
+        'n_intra': n_intra,
+        'n_inter': n_inter,
+        'num_relaxations': num_relaxations,
+        'energies_base': energies_base,
+        'energies_learn': energies_learn,
+        'best_e_base': best_e_base,
+        'best_e_learn': best_e_learn,
+        'best_s_base': best_s_base,
+        'best_s_learn': best_s_learn,
+        'all_states_base': all_states_base,
+        'all_states_learn': all_states_learn,
+        'energies_unstruct_base': energies_unstruct_base,
+        'best_e_unstruct_base': best_e_unstruct_base,
+        'best_s_unstruct_base': best_s_unstruct_base,
+        'all_states_unstruct_base': all_states_unstruct_base,
+        'energies_unstruct': energies_unstruct,
+        'best_e_unstruct': best_e_unstruct,
+        'best_s_unstruct': best_s_unstruct,
+        'all_states_unstruct': all_states_unstruct,
+    }
+
+
+def _render_results():
+  """Render results from session state (survives widget interactions)."""
+  if 'results' not in st.session_state:
+    st.info("Adjust parameters in the sidebar, then click **Run experiment**.")
+    return
+
+  r = st.session_state.results
+  N = r['N']
+  num_relaxations = r['num_relaxations']
+  energies_base = r['energies_base']
+  energies_learn = r['energies_learn']
+  best_e_base = r['best_e_base']
+  best_e_learn = r['best_e_learn']
+  best_s_base = r['best_s_base']
+  best_s_learn = r['best_s_learn']
+  energies_unstruct_base = r['energies_unstruct_base']
+  best_e_unstruct_base = r['best_e_unstruct_base']
+  best_s_unstruct_base = r['best_s_unstruct_base']
+  energies_unstruct = r['energies_unstruct']
+  best_e_unstruct = r['best_e_unstruct']
+  best_s_unstruct = r['best_s_unstruct']
+
+  st.info(
+      f"Generated a **modular** constraint problem: "
+      f"**{N}** switches in **{r['n_modules']}** modules of {r['module_size']}. "
+      f"**{r['n_intra']}** strong intra-module constraints "
+      f"(|\u03b1|={r['intra_strength']:.1f}), "
+      f"**{r['n_inter']}** weak inter-module constraints "
+      f"(|\u03b1|={r['inter_strength']:.3f}). "
+      f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
+      f"This structure creates many local minima that share recurring "
+      f"sub-patterns \u2014 exactly the condition where Hebbian learning "
+      f"can generalise."
+  )
+
+  stats = analyse_results(
+      energies_base, energies_learn, best_e_base, best_e_learn,
+      num_relaxations,
+  )
+  base_mean = stats['base_mean']
+  base_std = stats['base_std']
+  learn_mean = stats['learn_mean']
+  learn_std = stats['learn_std']
+  tail = stats['tail']
+  learn_tail_mean = stats['learn_tail_mean']
+  learn_tail_std = stats['learn_tail_std']
+  improvement = stats['improvement']
+  learning_won = stats['learning_won']
+  unique_base = stats['unique_base']
+  unique_learn_tail = stats['unique_learn_tail']
+  running_best_base = stats['running_best_base']
+  running_best_learn = stats['running_best_learn']
+
+  st.divider()
+  st.subheader("What happened?")
+
+  # ── Modular problem metrics ──
+  st.markdown("##### Modular problem (with groups)")
+  m1, m2, m3 = st.columns(3)
+  with m1:
+      st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
+  with m2:
+      delta_e = best_e_learn - best_e_base
+      st.metric(
+          "With Hebbian learning",
+          f"{best_e_learn:.0f}",
+          delta=f"{delta_e:.0f} vs baseline",
+          delta_color="inverse",
+      )
+  with m3:
+      modular_improvement = (best_e_learn - best_e_base) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+      st.metric("Learning improvement", f"{modular_improvement:+.1f}%")
+
+  # ── Unstructured problem metrics ──
+  st.markdown("##### Unstructured problem (no groups)")
+  u1, u2, u3 = st.columns(3)
+  with u1:
+      st.metric("Baseline (no learning)", f"{best_e_unstruct_base:.0f}")
+  with u2:
+      delta_eu = best_e_unstruct - best_e_unstruct_base
+      st.metric(
+          "With Hebbian learning",
+          f"{best_e_unstruct:.0f}",
+          delta=f"{delta_eu:.0f} vs baseline",
+          delta_color="inverse",
+      )
+  with u3:
+      unstruct_improvement = (best_e_unstruct - best_e_unstruct_base) / abs(best_e_unstruct_base) * 100 if best_e_unstruct_base != 0 else 0
+      st.metric("Learning improvement", f"{unstruct_improvement:+.1f}%")
+
+  st.markdown(
+      "Each image below shows the **best state vector** the network "
+      "found, laid out as a grid. Every square is one switch: "
+      "**white = ON (+1)**, **black = OFF (\u22121)**, "
+      "**grey = padding** (ignored \u2014 just fills the grid to a rectangle). "
+      "A good solution tends to show large uniform blocks of white or "
+      "black, reflecting agreement within modules."
+  )
+  c1, c2, c3, c4 = st.columns(4)
+  with c1:
+      st.write("**Modular — no learning**")
+      st.image(state_to_img(best_s_base, N), width=120)
+      st.caption(f"Energy: {best_e_base:.0f}")
+  with c2:
+      st.write("**Modular — with learning**")
+      st.image(state_to_img(best_s_learn, N), width=120)
+      st.caption(f"Energy: {best_e_learn:.0f}")
+  with c3:
+      st.write("**No groups — no learning**")
+      st.image(state_to_img(best_s_unstruct_base, N), width=120)
+      st.caption(f"Energy: {best_e_unstruct_base:.0f}")
+  with c4:
+      st.write("**No groups — with learning**")
+      st.image(state_to_img(best_s_unstruct, N), width=120)
+      st.caption(f"Energy: {best_e_unstruct:.0f}")
+
+  st.markdown(f"""
+**Phase 1 (no learning):** {num_relaxations} relaxations from random starts.
+
+- Attractor energies ranged from **{min(energies_base):.0f}** to **{max(energies_base):.0f}**
+- Mean energy: **{base_mean:.0f}** (std: {base_std:.0f})
+- Best energy found: **{best_e_base:.0f}**
+- Distinct energy levels visited: ~{unique_base}
+
+The network fell into many different local minima, scattered across a wide
+band. No single attractor dominated.
+
+---
+
+**Phase 2 (with Hebbian learning):** {num_relaxations} relaxations, same random
+starting procedure, but with **concurrent Hebbian learning at every state
+update** throughout each relaxation (Watson Eq. 3).
+
+- Best energy found: **{best_e_learn:.0f}**
+- Mean energy over all relaxations: **{learn_mean:.0f}** (std: {learn_std:.0f})
+- Mean energy over last {tail} relaxations: **{learn_tail_mean:.0f}** (std: {learn_tail_std:.0f})
+- Distinct energy levels in last {tail} relaxations: ~{unique_learn_tail}
+
+---
+
+**Phase 3 & 4 (unstructured problem — no groups):** A completely different
+problem with the same number of switches ({N}), the same positive bias
+({r['positive_bias']}%), but **no modular structure** — all connections
+have the same uniform strength. Phase 3 runs a baseline (no learning),
+Phase 4 applies Hebbian learning.
+
+- **Baseline best energy:** {best_e_unstruct_base:.0f}
+  (mean: {np.mean(energies_unstruct_base):.0f}, std: {np.std(energies_unstruct_base):.0f})
+- **With learning best energy:** {best_e_unstruct:.0f}
+  (mean: {np.mean(energies_unstruct):.0f}, std: {np.std(energies_unstruct):.0f})
+- **Learning improvement:** {unstruct_improvement:+.1f}%
+
+Compare with the modular problem's {modular_improvement:+.1f}% improvement.
+Without groups creating recurring sub-patterns, Hebbian learning has far
+less structure to latch onto — the energy landscape is smoother and more
+uniform, so learning has less to "discover."
+
+*(The raw energy numbers between the two problems are not comparable —
+what matters is the **percentage improvement** learning achieves on each.)*
+""")
+
+  # Determine winner (phases 1 & 2 only — phase 3 is a different problem)
+  results_map = {
+      'No learning (modular)': best_e_base,
+      'Flat + learning (modular)': best_e_learn,
+  }
+  winner = min(results_map, key=results_map.get)
+
+  if winner == 'No learning (modular)':
+      st.markdown(f"""
+**Learning did not beat the baseline** on the modular problem this time
+(baseline best: **{best_e_base:.0f}**, flat+learning:
+**{best_e_learn:.0f}**).
+This can happen with too few relaxations or a learning rate that's too
+high. Try adjusting the parameters.
+""")
+  else:
+      st.markdown(f"""
+**Flat Hebbian learning found the best solution** on the modular problem
+at **{best_e_learn:.0f}** (baseline: {best_e_base:.0f}). In the last
+{tail} relaxations it converged to just ~{unique_learn_tail} distinct
+energy level(s).
+
+The modular structure created recurring sub-patterns that learning could
+accumulate — strengthening connections that consistently appeared across
+different settled arrangements.
+""")
+
+  st.markdown(f"""
+---
+
+**See the figures below** for the full picture (all three approaches
+side by side):
+
+- **Figure 1 -- Attractor energies:** The energy of each settled state,
+  plotted over relaxations. For each problem (modular and unstructured),
+  we compare baseline vs Hebbian learning.
+
+- **Figure 2 -- Running best:** The best energy found *so far* at each
+  point. Shows how quickly each approach converges.
+
+- **Figure 3 -- Energy distribution:** Histograms for the modular and
+  unstructured problems separately, comparing baseline vs learning.
+
+- **Figure 4 -- Attractor landscape (PCA):** Every final state compressed
+  to 2D. Shows how learning reshapes exploration differently for each
+  problem.
+""")
+
+  st.caption(
+      "All numbers above are computed directly from this run. "
+      "Re-running will generate a new random problem and produce "
+      "different numbers."
+  )
+
+  st.divider()
+  st.subheader("Figure 1 -- Attractor energies per relaxation")
+
+  st.markdown("**Modular problem (with groups)**")
+  c_m1, c_m2 = st.columns(2)
+  with c_m1:
+      st.caption("No learning")
+      df_base = pd.DataFrame(
+          {"Energy": energies_base},
+          index=range(1, num_relaxations + 1),
+      )
+      df_base.index.name = "Relaxation"
+      st.line_chart(df_base, height=300)
+  with c_m2:
+      st.caption("With Hebbian learning")
+      df_learn = pd.DataFrame(
+          {"Energy": energies_learn},
+          index=range(1, num_relaxations + 1),
+      )
+      df_learn.index.name = "Relaxation"
+      st.line_chart(df_learn, height=300)
+
+  st.markdown("**Unstructured problem (no groups)**")
+  c_u1, c_u2 = st.columns(2)
+  with c_u1:
+      st.caption("No learning")
+      df_unstruct_base = pd.DataFrame(
+          {"Energy": energies_unstruct_base},
+          index=range(1, num_relaxations + 1),
+      )
+      df_unstruct_base.index.name = "Relaxation"
+      st.line_chart(df_unstruct_base, height=300)
+  with c_u2:
+      st.caption("With Hebbian learning")
+      df_unstruct = pd.DataFrame(
+          {"Energy": energies_unstruct},
+          index=range(1, num_relaxations + 1),
+      )
+      df_unstruct.index.name = "Relaxation"
+      st.line_chart(df_unstruct, height=300)
+
+  st.subheader("Figure 2 -- Running best energy over relaxations")
+
+  running_best_unstruct_base = list(np.minimum.accumulate(energies_unstruct_base))
+  running_best_unstruct = list(np.minimum.accumulate(energies_unstruct))
+
+  st.markdown("**Modular problem**")
+  c_rb1, c_rb2 = st.columns(2)
+  with c_rb1:
+      st.caption("No learning")
+      df_rb = pd.DataFrame(
+          {"Best so far": running_best_base},
+          index=range(1, num_relaxations + 1),
+      )
+      st.line_chart(df_rb, height=300)
+  with c_rb2:
+      st.caption("With Hebbian learning")
+      df_rl = pd.DataFrame(
+          {"Best so far": running_best_learn},
+          index=range(1, num_relaxations + 1),
+      )
+      st.line_chart(df_rl, height=300)
+
+  st.markdown("**Unstructured problem**")
+  c_rb3, c_rb4 = st.columns(2)
+  with c_rb3:
+      st.caption("No learning")
+      df_rub = pd.DataFrame(
+          {"Best so far": running_best_unstruct_base},
+          index=range(1, num_relaxations + 1),
+      )
+      st.line_chart(df_rub, height=300)
+  with c_rb4:
+      st.caption("With Hebbian learning")
+      df_ru = pd.DataFrame(
+          {"Best so far": running_best_unstruct},
+          index=range(1, num_relaxations + 1),
+      )
+      st.line_chart(df_ru, height=300)
+
+  st.subheader("Figure 3 -- Distribution of attractor energies")
+
+  st.markdown("**Modular problem**")
+  all_e_mod = energies_base + energies_learn
+  bins_mod = np.linspace(min(all_e_mod), max(all_e_mod), 40)
+  counts_base, edges_mod = np.histogram(energies_base, bins=bins_mod)
+  counts_learn, _ = np.histogram(energies_learn, bins=bins_mod)
+  bin_centers_mod = ((edges_mod[:-1] + edges_mod[1:]) / 2).astype(int)
+  hist_df_mod = pd.DataFrame({
+      "No learning": counts_base,
+      "With learning": counts_learn,
+  }, index=bin_centers_mod)
+  hist_df_mod.index.name = "Energy"
+  st.bar_chart(hist_df_mod, height=300)
+
+  st.markdown("**Unstructured problem**")
+  all_e_unstr = energies_unstruct_base + energies_unstruct
+  bins_unstr = np.linspace(min(all_e_unstr), max(all_e_unstr), 40)
+  counts_unstruct_base, edges_unstr = np.histogram(energies_unstruct_base, bins=bins_unstr)
+  counts_unstruct_learn, _ = np.histogram(energies_unstruct, bins=bins_unstr)
+  bin_centers_unstr = ((edges_unstr[:-1] + edges_unstr[1:]) / 2).astype(int)
+  hist_df_unstr = pd.DataFrame({
+      "No learning": counts_unstruct_base,
+      "With learning": counts_unstruct_learn,
+  }, index=bin_centers_unstr)
+  hist_df_unstr.index.name = "Energy"
+  st.bar_chart(hist_df_unstr, height=300)
+
+  # ─── Figure 4: PCA landscape ─────────────────────────────
+  st.subheader("Figure 4 — Attractor landscape (PCA projection)")
+
+  st.markdown(r"""
+Each dot below is one **final state** — the arrangement the network settled
+into after a single relaxation. Each state lives in **{N}-dimensional**
+space (one dimension per switch), compressed to **two dimensions** using
+**Principal Component Analysis (PCA)**.
+
+Concretely, for each final state $\mathbf{{s}}$ (a vector of {N} switch values),
+the two plot coordinates are **weighted sums** of all the switch values:
+
+$$x = \sum_{{j=1}}^{{{N}}} v_{{1j}} \, s_j \qquad y = \sum_{{j=1}}^{{{N}}} v_{{2j}} \, s_j$$
+
+where $\mathbf{{v}}_1$ and $\mathbf{{v}}_2$ are the two directions of
+maximum variance, found by singular value decomposition of the centred
+state matrix. States that are similar (many switches in common)
+end up close together; states that differ end up far apart.
+
+**What to look for:**
+- **No learning:** scattered dots — many different attractors.
+- **With learning on the modular problem:** dots collapse into a tight
+  cluster — learning concentrates the search.
+- **With learning on the unstructured problem:** less concentration —
+  without modular structure, learning has less to latch onto.
+
+Larger dots = lower energy (better solutions). Each problem has its own
+PCA (mixing states from different problems would be meaningless).
+""".format(N=N))
+
+  R = num_relaxations
+
+  # ── PCA for modular problem ──
+  st.markdown("**Modular problem**")
+  states_base = np.array(r['all_states_base'])
+  states_learn = np.array(r['all_states_learn'])
+  all_states_mod = np.vstack([states_base, states_learn])
+  mean_mod = all_states_mod.mean(axis=0)
+  centered_mod = all_states_mod - mean_mod
+  _, S_mod, Vt_mod = np.linalg.svd(centered_mod, full_matrices=False)
+  proj_mat_mod = np.column_stack([Vt_mod[0], Vt_mod[1]])
+  proj_base = centered_mod[:R] @ proj_mat_mod
+  proj_learn = centered_mod[R:] @ proj_mat_mod
+
+  all_e_mod = np.array(energies_base + energies_learn)
+  e_min_m, e_max_m = all_e_mod.min(), all_e_mod.max()
+  e_range_m = e_max_m - e_min_m if e_max_m > e_min_m else 1.0
+
+  pca_m1, pca_m2 = st.columns(2)
+  with pca_m1:
+      st.caption("No learning")
+      norm_e = (np.array(energies_base) - e_min_m) / e_range_m
+      sizes = 30 + 70 * (1 - norm_e)
+      df_pca = pd.DataFrame({
+          "PC1": proj_base[:, 0], "PC2": proj_base[:, 1],
+          "Energy": energies_base, "size": sizes,
+      })
+      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
+                       color="#4a90d9", height=400)
+  with pca_m2:
+      st.caption("With Hebbian learning")
+      norm_e = (np.array(energies_learn) - e_min_m) / e_range_m
+      sizes = 30 + 70 * (1 - norm_e)
+      df_pca = pd.DataFrame({
+          "PC1": proj_learn[:, 0], "PC2": proj_learn[:, 1],
+          "Energy": energies_learn, "size": sizes,
+      })
+      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
+                       color="#d94a4a", height=400)
+
+  total_var_m = (S_mod ** 2).sum()
+  var_exp_m = (S_mod[:2] ** 2) / total_var_m * 100
+  st.caption(
+      f"Modular PCA axes capture {var_exp_m[0]:.1f}% + {var_exp_m[1]:.1f}% "
+      f"= {var_exp_m.sum():.1f}% of variance."
+  )
+
+  # ── PCA for unstructured problem ──
+  st.markdown("**Unstructured problem**")
+  states_unstruct_base = np.array(r['all_states_unstruct_base'])
+  states_unstruct = np.array(r['all_states_unstruct'])
+  all_states_unstr = np.vstack([states_unstruct_base, states_unstruct])
+  mean_unstr = all_states_unstr.mean(axis=0)
+  centered_unstr = all_states_unstr - mean_unstr
+  _, S_unstr, Vt_unstr = np.linalg.svd(centered_unstr, full_matrices=False)
+  proj_mat_unstr = np.column_stack([Vt_unstr[0], Vt_unstr[1]])
+  proj_unstruct_base = centered_unstr[:R] @ proj_mat_unstr
+  proj_unstruct_learn = centered_unstr[R:] @ proj_mat_unstr
+
+  all_e_unstr = np.array(energies_unstruct_base + energies_unstruct)
+  e_min_u, e_max_u = all_e_unstr.min(), all_e_unstr.max()
+  e_range_u = e_max_u - e_min_u if e_max_u > e_min_u else 1.0
+
+  pca_u1, pca_u2 = st.columns(2)
+  with pca_u1:
+      st.caption("No learning")
+      norm_e = (np.array(energies_unstruct_base) - e_min_u) / e_range_u
+      sizes = 30 + 70 * (1 - norm_e)
+      df_pca = pd.DataFrame({
+          "PC1": proj_unstruct_base[:, 0], "PC2": proj_unstruct_base[:, 1],
+          "Energy": energies_unstruct_base, "size": sizes,
+      })
+      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
+                       color="#4a90d9", height=400)
+  with pca_u2:
+      st.caption("With Hebbian learning")
+      norm_e = (np.array(energies_unstruct) - e_min_u) / e_range_u
+      sizes = 30 + 70 * (1 - norm_e)
+      df_pca = pd.DataFrame({
+          "PC1": proj_unstruct_learn[:, 0], "PC2": proj_unstruct_learn[:, 1],
+          "Energy": energies_unstruct, "size": sizes,
+      })
+      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
+                       color="#d94a4a", height=400)
+
+  total_var_u = (S_unstr ** 2).sum()
+  var_exp_u = (S_unstr[:2] ** 2) / total_var_u * 100
+  st.caption(
+      f"Unstructured PCA axes capture {var_exp_u[0]:.1f}% + {var_exp_u[1]:.1f}% "
+      f"= {var_exp_u.sum():.1f}% of variance."
+  )
+
+
+_run_btn = st.sidebar.button("Run experiment", type="primary")
+_run_experiment(_run_btn)
+_render_results()
+_render_info_sections()

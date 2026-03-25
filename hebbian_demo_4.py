@@ -430,9 +430,15 @@ ended up in the same state (both ON or both OFF), strengthen the
 "agree" connection between them very slightly. If they ended up in
 different states (one ON, one OFF), strengthen the "disagree" connection
 slightly. One adjustment is almost invisible. But after hundreds of
-trials, the adjustments **accumulate** -- especially for pairs of switches
+trials, the adjustments **accumulate** — especially for pairs of switches
 that *consistently* end up the same way across many different settled
 arrangements.
+
+Crucially, this only works **in the limit of low learning rates** — the
+learning rate $\delta$ must be small enough that the system visits a
+sufficient sample of attractors between weight updates. That way the
+Hebbian nudges accumulate only the most reliable, recurring sub-patterns
+rather than overfitting to transient fluctuations.
 
 The formula:
 
@@ -899,6 +905,13 @@ what matters is the **percentage improvement** learning achieves on each.)*
 **{best_e_learn:.0f}**).
 This can happen with too few relaxations or a learning rate that's too
 high. Try adjusting the parameters.
+""")
+      st.markdown("""
+Note: conversely, learning can succeed when the learning rate is low.
+In the limit of low learning rates — such that the system can visit a
+sufficient sample of attractors between weight updates — Hebbian
+updates accumulate reliable recurring sub-patterns rather than
+overfitting transient fluctuations.
 """)
   else:
       st.markdown(f"""

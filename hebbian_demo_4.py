@@ -52,17 +52,20 @@ def _watson_fig1_real(energies_base, energies_learn):
                    edgecolors='none', zorder=3)
 
         # KDE curve beside the dots (mirrored violin style)
-        if len(e) > 1 and np.std(e) > 0:
+        if len(e) > 2 and np.ptp(e) > 0:
             from scipy.stats import gaussian_kde
-            grid = np.linspace(e.min() - np.std(e), e.max() + np.std(e), 200)
-            kde = gaussian_kde(e, bw_method=0.35)
-            density = kde(grid)
-            # Scale density so the curve sits beside the dots
-            density = density / density.max() * 0.6
-            ax.fill_betweenx(grid, -density - 0.5, -0.5,
-                             color=col_kde, alpha=0.15)
-            ax.plot(-density - 0.5, grid, color=col_kde, linewidth=1.2,
-                    alpha=0.6)
+            try:
+                grid = np.linspace(e.min() - np.std(e), e.max() + np.std(e), 200)
+                kde = gaussian_kde(e, bw_method=0.35)
+                density = kde(grid)
+                # Scale density so the curve sits beside the dots
+                density = density / density.max() * 0.6
+                ax.fill_betweenx(grid, -density - 0.5, -0.5,
+                                 color=col_kde, alpha=0.15)
+                ax.plot(-density - 0.5, grid, color=col_kde, linewidth=1.2,
+                        alpha=0.6)
+            except np.linalg.LinAlgError:
+                pass  # all energies too similar for KDE — just show dots
 
         ax.set_title(title, fontsize=10)
         ax.set_xlim(-1.5, 1.0)
@@ -263,23 +266,11 @@ set of connections:
    before** — it has *generalised* from many mediocre experiences into
    something superior.
 
-3. **Unstructured comparison** — what happens when there is no modular
-   structure to exploit? Phases 3 and 4 generate a completely new problem
-   with the same number of switches but **uniform connection strengths**
-   — every pair of switches is connected equally strongly, with no
-   groups at all. Phase 3 runs a baseline (no learning), and Phase 4
-   applies the same Hebbian learning as Phase 2.
-
-   Because the problem has no internal modules, there are no recurring
-   sub-patterns for learning to latch onto. The comparison that matters
-   is the **percentage improvement** learning achieves: on the modular
-   problem learning produces a dramatic gain; on the unstructured
-   problem the gain is much smaller. This shows that **modular structure
-   is what makes Hebbian learning effective**.
-
-   Note: because this uses a *different problem*, the raw energy numbers
-   are not comparable to Phases 1 and 2 — only the improvement ratios
-   are meaningful.
+To see what happens **without** modular structure, set the number of
+modules to **0**. This creates an unstructured problem with uniform
+connection strengths — every pair of switches is connected equally
+strongly. Because there are no recurring sub-patterns for learning
+to latch onto, the improvement is typically much smaller.
 """)
 
 
@@ -523,7 +514,7 @@ with st.sidebar:
     st.subheader("Problem structure")
     N_MODULES = st.slider(
         "Number of modules",
-        min_value=2,
+        min_value=0,
         max_value=60,
         step=1,
         key="n_modules",
@@ -531,7 +522,10 @@ with st.sidebar:
             "Default **30**. "
             "More modules means more inter-group coordination is needed, "
             "making the problem harder for local search but giving "
-            "learning more structure to exploit."
+            "learning more structure to exploit. "
+            "Set to **0** for an unstructured problem (uniform connection "
+            "strengths, no groups) \u2014 this shows that modular structure "
+            "is what makes Hebbian learning effective."
         ),
     )
     MODULE_SIZE = st.slider(
@@ -663,18 +657,28 @@ def _run_experiment(run):
 
     tau_multiplier = st.session_state.tau_multiplier
 
-    N = n_modules * module_size
+    if n_modules == 0:
+        # Unstructured: use module_size as total N, uniform strength
+        N = module_size
+        uniform_strength = (intra_strength + inter_strength) / 2
+        alpha = generate_modular_problem(
+            1, N, uniform_strength, uniform_strength,
+            positive_bias, RNG,
+        )
+        n_intra = 0
+        n_inter = N * (N - 1) // 2
+    else:
+        N = n_modules * module_size
+        alpha = generate_modular_problem(
+            n_modules, module_size, intra_strength,
+            inter_strength, positive_bias, RNG,
+        )
+        n_intra = n_modules * (module_size * (module_size - 1) // 2)
+        n_inter = N * (N - 1) // 2 - n_intra
+
     N_PAIRS = N * (N - 1) // 2
     TAU = tau_multiplier * N
     DELTA_PER_UPDATE = delta / TAU
-
-    alpha = generate_modular_problem(
-        n_modules, module_size, intra_strength,
-        inter_strength, positive_bias, RNG,
-    )
-
-    n_intra = n_modules * (module_size * (module_size - 1) // 2)
-    n_inter = N_PAIRS - n_intra
 
     with st.status("Running experiment...", expanded=True) as status:
         status.update(label="Phase 1: relaxing without learning...", state="running")
@@ -685,23 +689,6 @@ def _run_experiment(run):
         status.update(label="Phase 2: relaxing with Hebbian learning...", state="running")
         energies_learn, best_e_learn, best_s_learn, _states_learn = run_with_learning(
             alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
-        )
-
-        status.update(label="Phase 3: baseline without groups...", state="running")
-        # Generate an unstructured problem: same N, same bias,
-        # but all connections have the same strength (no modules).
-        uniform_strength = (intra_strength + inter_strength) / 2
-        alpha_flat = generate_modular_problem(
-            1, N, uniform_strength, uniform_strength,
-            positive_bias, RNG,
-        )
-        energies_unstruct_base, best_e_unstruct_base, best_s_unstruct_base, _ = run_baseline(
-            alpha_flat, num_relaxations, RNG, tau=TAU,
-        )
-
-        status.update(label="Phase 4: Hebbian learning without groups...", state="running")
-        energies_unstruct, best_e_unstruct, best_s_unstruct, _ = run_with_learning(
-            alpha_flat, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
         )
 
         status.update(label="Experiment complete!", state="complete", expanded=False)
@@ -723,12 +710,6 @@ def _run_experiment(run):
         'best_e_learn': best_e_learn,
         'best_s_base': best_s_base,
         'best_s_learn': best_s_learn,
-        'energies_unstruct_base': energies_unstruct_base,
-        'best_e_unstruct_base': best_e_unstruct_base,
-        'best_s_unstruct_base': best_s_unstruct_base,
-        'energies_unstruct': energies_unstruct,
-        'best_e_unstruct': best_e_unstruct,
-        'best_s_unstruct': best_s_unstruct,
     }
 
 
@@ -747,25 +728,30 @@ def _render_results():
   best_e_learn = r['best_e_learn']
   best_s_base = r['best_s_base']
   best_s_learn = r['best_s_learn']
-  energies_unstruct_base = r['energies_unstruct_base']
-  best_e_unstruct_base = r['best_e_unstruct_base']
-  best_s_unstruct_base = r['best_s_unstruct_base']
-  energies_unstruct = r['energies_unstruct']
-  best_e_unstruct = r['best_e_unstruct']
-  best_s_unstruct = r['best_s_unstruct']
 
-  st.info(
-      f"Generated a **modular** constraint problem: "
-      f"**{N}** switches in **{r['n_modules']}** modules of {r['module_size']}. "
-      f"**{r['n_intra']}** strong intra-module constraints "
-      f"(|\u03b1|={r['intra_strength']:.1f}), "
-      f"**{r['n_inter']}** weak inter-module constraints "
-      f"(|\u03b1|={r['inter_strength']:.3f}). "
-      f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
-      f"This structure creates many local minima that share recurring "
-      f"sub-patterns \u2014 exactly the condition where Hebbian learning "
-      f"can generalise."
-  )
+  if r['n_modules'] == 0:
+      st.info(
+          f"Generated an **unstructured** constraint problem: "
+          f"**{N}** switches with **uniform** connection strength "
+          f"(|\u03b1|={(r['intra_strength'] + r['inter_strength']) / 2:.3f}). "
+          f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
+          f"There are no groups \u2014 every pair of switches is connected "
+          f"equally strongly. Without modular structure there are fewer "
+          f"recurring sub-patterns for learning to exploit."
+      )
+  else:
+      st.info(
+          f"Generated a **modular** constraint problem: "
+          f"**{N}** switches in **{r['n_modules']}** modules of {r['module_size']}. "
+          f"**{r['n_intra']}** strong intra-module constraints "
+          f"(|\u03b1|={r['intra_strength']:.1f}), "
+          f"**{r['n_inter']}** weak inter-module constraints "
+          f"(|\u03b1|={r['inter_strength']:.3f}). "
+          f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
+          f"This structure creates many local minima that share recurring "
+          f"sub-patterns \u2014 exactly the condition where Hebbian learning "
+          f"can generalise."
+      )
 
   stats = analyse_results(
       energies_base, energies_learn, best_e_base, best_e_learn,
@@ -787,7 +773,7 @@ def _render_results():
   st.subheader("What happened?")
 
   # ── Modular problem metrics ──
-  st.markdown("##### Modular problem (with groups)")
+  st.markdown("##### Results")
   m1, m2, m3 = st.columns(3)
   with m1:
       st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
@@ -800,25 +786,8 @@ def _render_results():
           delta_color="inverse",
       )
   with m3:
-      modular_improvement = (best_e_learn - best_e_base) / abs(best_e_base) * 100 if best_e_base != 0 else 0
-      st.metric("Learning improvement", f"{modular_improvement:+.1f}%")
-
-  # ── Unstructured problem metrics ──
-  st.markdown("##### Unstructured problem (no groups)")
-  u1, u2, u3 = st.columns(3)
-  with u1:
-      st.metric("Baseline (no learning)", f"{best_e_unstruct_base:.0f}")
-  with u2:
-      delta_eu = best_e_unstruct - best_e_unstruct_base
-      st.metric(
-          "With Hebbian learning",
-          f"{best_e_unstruct:.0f}",
-          delta=f"{delta_eu:.0f} vs baseline",
-          delta_color="inverse",
-      )
-  with u3:
-      unstruct_improvement = (best_e_unstruct - best_e_unstruct_base) / abs(best_e_unstruct_base) * 100 if best_e_unstruct_base != 0 else 0
-      st.metric("Learning improvement", f"{unstruct_improvement:+.1f}%")
+      improvement_pct = (best_e_learn - best_e_base) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+      st.metric("Learning improvement", f"{improvement_pct:+.1f}%")
 
   st.markdown(
       "Each image below shows the **best state vector** the network "
@@ -828,23 +797,15 @@ def _render_results():
       "A good solution tends to show large uniform blocks of white or "
       "black, reflecting agreement within modules."
   )
-  c1, c2, c3, c4 = st.columns(4)
+  c1, c2 = st.columns(2)
   with c1:
-      st.write("**Modular — no learning**")
+      st.write("**No learning**")
       st.image(state_to_img(best_s_base, N), width=120)
       st.caption(f"Energy: {best_e_base:.0f}")
   with c2:
-      st.write("**Modular — with learning**")
+      st.write("**With learning**")
       st.image(state_to_img(best_s_learn, N), width=120)
       st.caption(f"Energy: {best_e_learn:.0f}")
-  with c3:
-      st.write("**No groups — no learning**")
-      st.image(state_to_img(best_s_unstruct_base, N), width=120)
-      st.caption(f"Energy: {best_e_unstruct_base:.0f}")
-  with c4:
-      st.write("**No groups — with learning**")
-      st.image(state_to_img(best_s_unstruct, N), width=120)
-      st.caption(f"Energy: {best_e_unstruct:.0f}")
 
   st.markdown(f"""
 **Phase 1 (no learning):** {num_relaxations} relaxations from random starts.
@@ -867,41 +828,13 @@ update** throughout each relaxation (Watson Eq. 3).
 - Mean energy over all relaxations: **{learn_mean:.0f}** (std: {learn_std:.0f})
 - Mean energy over last {tail} relaxations: **{learn_tail_mean:.0f}** (std: {learn_tail_std:.0f})
 - Distinct energy levels in last {tail} relaxations: ~{unique_learn_tail}
-
----
-
-**Phase 3 & 4 (unstructured problem — no groups):** A completely different
-problem with the same number of switches ({N}), the same positive bias
-({r['positive_bias']}%), but **no modular structure** — all connections
-have the same uniform strength. Phase 3 runs a baseline (no learning),
-Phase 4 applies Hebbian learning.
-
-- **Baseline best energy:** {best_e_unstruct_base:.0f}
-  (mean: {np.mean(energies_unstruct_base):.0f}, std: {np.std(energies_unstruct_base):.0f})
-- **With learning best energy:** {best_e_unstruct:.0f}
-  (mean: {np.mean(energies_unstruct):.0f}, std: {np.std(energies_unstruct):.0f})
-- **Learning improvement:** {unstruct_improvement:+.1f}%
-
-Compare with the modular problem's {modular_improvement:+.1f}% improvement.
-Without groups creating recurring sub-patterns, Hebbian learning has far
-less structure to latch onto — the energy landscape is smoother and more
-uniform, so learning has less to "discover."
-
-*(The raw energy numbers between the two problems are not comparable —
-what matters is the **percentage improvement** learning achieves on each.)*
 """)
 
-  # Determine winner (phases 1 & 2 only — phase 3 is a different problem)
-  results_map = {
-      'No learning (modular)': best_e_base,
-      'Flat + learning (modular)': best_e_learn,
-  }
-  winner = min(results_map, key=results_map.get)
-
-  if winner == 'No learning (modular)':
+  # Determine winner
+  if best_e_learn >= best_e_base:
       st.markdown(f"""
-**Learning did not beat the baseline** on the modular problem this time
-(baseline best: **{best_e_base:.0f}**, flat+learning:
+**Learning did not beat the baseline** this time
+(baseline best: **{best_e_base:.0f}**, with learning:
 **{best_e_learn:.0f}**).
 This can happen with too few relaxations or a learning rate that's too
 high. Try adjusting the parameters.
@@ -915,14 +848,9 @@ overfitting transient fluctuations.
 """)
   else:
       st.markdown(f"""
-**Flat Hebbian learning found the best solution** on the modular problem
-at **{best_e_learn:.0f}** (baseline: {best_e_base:.0f}). In the last
-{tail} relaxations it converged to just ~{unique_learn_tail} distinct
-energy level(s).
-
-The modular structure created recurring sub-patterns that learning could
-accumulate — strengthening connections that consistently appeared across
-different settled arrangements.
+**Hebbian learning found the best solution** at **{best_e_learn:.0f}**
+(baseline: {best_e_base:.0f}). In the last {tail} relaxations it
+converged to just ~{unique_learn_tail} distinct energy level(s).
 """)
 
   st.caption(

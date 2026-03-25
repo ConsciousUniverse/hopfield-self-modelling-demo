@@ -33,7 +33,7 @@ The switches are arranged in **groups** (default: 30 groups of 5). Connections w
 
 2. **Flat Hebbian learning** — The same process, but now at every single state update, every connection in the whole network gets a tiny nudge: pairs of switches that are currently the same get a slightly stronger "agree" connection; pairs that differ get a slightly stronger "disagree" connection. The switch arrangement is still thrown away between relaxations, but the adjusted connection strengths are kept. Over hundreds of relaxations, the nudges accumulate fastest for recurring patterns, gradually reshaping the energy landscape until the network reliably finds solutions **better than any it has seen before**.
 
-3. **Unstructured comparison** — A completely new problem with the same number of switches but **uniform connection strengths** (no groups). Both a baseline and Hebbian learning are run on this problem. Because there are no modules to create recurring sub-patterns, learning has far less structure to exploit — the percentage improvement is much smaller. This demonstrates that **modular structure is what makes Hebbian learning effective**.
+To see what happens without modular structure, set the number of modules to **0**. This creates an unstructured problem with uniform connection strengths — every pair of switches is connected equally strongly. Because there are no recurring sub-patterns for learning to latch onto, the improvement is typically much smaller. This demonstrates that **modular structure is what makes Hebbian learning effective**.
 
 ### The plot: true energy E<sup>α</sup><sub>0</sub>
 

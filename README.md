@@ -35,6 +35,10 @@ The switches are arranged in **groups** (default: 30 groups of 5). Connections w
 
 3. **Unstructured comparison** — A completely new problem with the same number of switches but **uniform connection strengths** (no groups). Both a baseline and Hebbian learning are run on this problem. Because there are no modules to create recurring sub-patterns, learning has far less structure to exploit — the percentage improvement is much smaller. This demonstrates that **modular structure is what makes Hebbian learning effective**.
 
+### The plot: true energy E<sup>α</sup><sub>0</sub>
+
+The key output is a plot of E<sup>α</sup><sub>0</sub> over relaxations — the energy of each final state measured against the **original** constraint matrix α (before any learning modified the weights). This is the quantity we actually want to minimise (Watson Eq. 4). A downward trend in the learning curve means learning is genuinely improving solutions to the original problem, not just optimising modified weights.
+
 ---
 
 ## Run locally

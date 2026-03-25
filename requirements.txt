@@ -2,3 +2,5 @@ streamlit
 numpy
 pandas
 pillow
+matplotlib
+scipy

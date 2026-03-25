@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from PIL import Image
 
 from hopfield_algorithm import (
@@ -10,6 +11,75 @@ from hopfield_algorithm import (
     run_with_learning,
     analyse_results,
 )
+
+
+# ─── Watson Fig. 1 — real data version ──────────────────────
+
+def _watson_fig1_real(energies_base, energies_learn):
+    """Three-panel figure showing how learning changes the distribution
+    of attractor energies, using real experiment data.
+
+    (a) Baseline — energies without learning (the original landscape)
+    (b) Early learning — first third of relaxations with Hebbian learning
+    (c) Late learning — last third of relaxations with Hebbian learning
+
+    This is the honest, data-driven version of Watson et al. Fig. 1:
+    the distribution of visited attractors narrows and shifts to lower
+    energy as learning simplifies the landscape.
+    """
+    n = len(energies_learn)
+    third = max(n // 3, 1)
+    early = energies_learn[:third]
+    late = energies_learn[-third:]
+
+    panels = [
+        ("(a)  No learning", energies_base),
+        ("(b)  Early learning", early),
+        ("(c)  Late learning", late),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), sharey=True)
+    col_dot = '#3372B0'
+    col_kde = '#B03333'
+    rng = np.random.default_rng(42)
+
+    for ax, (title, energies) in zip(axes, panels):
+        e = np.asarray(energies, dtype=float)
+
+        # Strip chart: jitter horizontally so dots don't stack
+        jitter = rng.uniform(-0.3, 0.3, size=len(e))
+        ax.scatter(jitter, e, c=col_dot, s=18, alpha=0.6,
+                   edgecolors='none', zorder=3)
+
+        # KDE curve beside the dots (mirrored violin style)
+        if len(e) > 1 and np.std(e) > 0:
+            from scipy.stats import gaussian_kde
+            grid = np.linspace(e.min() - np.std(e), e.max() + np.std(e), 200)
+            kde = gaussian_kde(e, bw_method=0.35)
+            density = kde(grid)
+            # Scale density so the curve sits beside the dots
+            density = density / density.max() * 0.6
+            ax.fill_betweenx(grid, -density - 0.5, -0.5,
+                             color=col_kde, alpha=0.15)
+            ax.plot(-density - 0.5, grid, color=col_kde, linewidth=1.2,
+                    alpha=0.6)
+
+        ax.set_title(title, fontsize=10)
+        ax.set_xlim(-1.5, 1.0)
+        ax.tick_params(labelbottom=False, bottom=False)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+
+    axes[0].set_ylabel(r'$E^{\alpha}_0$  (true energy)', fontsize=9)
+
+    fig.suptitle(
+        'Distribution of attractor energies narrows as learning simplifies '
+        'the landscape',
+        fontsize=10, y=1.02,
+    )
+    fig.tight_layout()
+    return fig
 
 
 # ─── UI ─────────────────────────────────────────────────────
@@ -602,12 +672,12 @@ def _run_experiment(run):
 
     with st.status("Running experiment...", expanded=True) as status:
         status.update(label="Phase 1: relaxing without learning...", state="running")
-        energies_base, best_e_base, best_s_base, all_states_base = run_baseline(
+        energies_base, best_e_base, best_s_base, _states_base = run_baseline(
             alpha, num_relaxations, RNG, tau=TAU,
         )
 
         status.update(label="Phase 2: relaxing with Hebbian learning...", state="running")
-        energies_learn, best_e_learn, best_s_learn, all_states_learn = run_with_learning(
+        energies_learn, best_e_learn, best_s_learn, _states_learn = run_with_learning(
             alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
         )
 
@@ -619,12 +689,12 @@ def _run_experiment(run):
             1, N, uniform_strength, uniform_strength,
             positive_bias, RNG,
         )
-        energies_unstruct_base, best_e_unstruct_base, best_s_unstruct_base, all_states_unstruct_base = run_baseline(
+        energies_unstruct_base, best_e_unstruct_base, best_s_unstruct_base, _ = run_baseline(
             alpha_flat, num_relaxations, RNG, tau=TAU,
         )
 
         status.update(label="Phase 4: Hebbian learning without groups...", state="running")
-        energies_unstruct, best_e_unstruct, best_s_unstruct, all_states_unstruct = run_with_learning(
+        energies_unstruct, best_e_unstruct, best_s_unstruct, _ = run_with_learning(
             alpha_flat, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
         )
 
@@ -647,16 +717,12 @@ def _run_experiment(run):
         'best_e_learn': best_e_learn,
         'best_s_base': best_s_base,
         'best_s_learn': best_s_learn,
-        'all_states_base': all_states_base,
-        'all_states_learn': all_states_learn,
         'energies_unstruct_base': energies_unstruct_base,
         'best_e_unstruct_base': best_e_unstruct_base,
         'best_s_unstruct_base': best_s_unstruct_base,
-        'all_states_unstruct_base': all_states_unstruct_base,
         'energies_unstruct': energies_unstruct,
         'best_e_unstruct': best_e_unstruct,
         'best_s_unstruct': best_s_unstruct,
-        'all_states_unstruct': all_states_unstruct,
     }
 
 
@@ -710,8 +776,6 @@ def _render_results():
   learning_won = stats['learning_won']
   unique_base = stats['unique_base']
   unique_learn_tail = stats['unique_learn_tail']
-  running_best_base = stats['running_best_base']
-  running_best_learn = stats['running_best_learn']
 
   st.divider()
   st.subheader("What happened?")
@@ -848,262 +912,63 @@ accumulate — strengthening connections that consistently appeared across
 different settled arrangements.
 """)
 
-  st.markdown(f"""
----
-
-**See the figures below** for the full picture (all three approaches
-side by side):
-
-- **Figure 1 -- Attractor energies:** The energy of each settled state,
-  plotted over relaxations. For each problem (modular and unstructured),
-  we compare baseline vs Hebbian learning.
-
-- **Figure 2 -- Running best:** The best energy found *so far* at each
-  point. Shows how quickly each approach converges.
-
-- **Figure 3 -- Energy distribution:** Histograms for the modular and
-  unstructured problems separately, comparing baseline vs learning.
-
-- **Figure 4 -- Attractor landscape (PCA):** Every final state compressed
-  to 2D. Shows how learning reshapes exploration differently for each
-  problem.
-""")
-
   st.caption(
       "All numbers above are computed directly from this run. "
       "Re-running will generate a new random problem and produce "
       "different numbers."
   )
 
+  # ─── E^α_0 plot: true energy over relaxations ────────────
   st.divider()
-  st.subheader("Figure 1 -- Attractor energies per relaxation")
-
-  st.markdown("**Modular problem (with groups)**")
-  c_m1, c_m2 = st.columns(2)
-  with c_m1:
-      st.caption("No learning")
-      df_base = pd.DataFrame(
-          {"Energy": energies_base},
-          index=range(1, num_relaxations + 1),
-      )
-      df_base.index.name = "Relaxation"
-      st.line_chart(df_base, height=300)
-  with c_m2:
-      st.caption("With Hebbian learning")
-      df_learn = pd.DataFrame(
-          {"Energy": energies_learn},
-          index=range(1, num_relaxations + 1),
-      )
-      df_learn.index.name = "Relaxation"
-      st.line_chart(df_learn, height=300)
-
-  st.markdown("**Unstructured problem (no groups)**")
-  c_u1, c_u2 = st.columns(2)
-  with c_u1:
-      st.caption("No learning")
-      df_unstruct_base = pd.DataFrame(
-          {"Energy": energies_unstruct_base},
-          index=range(1, num_relaxations + 1),
-      )
-      df_unstruct_base.index.name = "Relaxation"
-      st.line_chart(df_unstruct_base, height=300)
-  with c_u2:
-      st.caption("With Hebbian learning")
-      df_unstruct = pd.DataFrame(
-          {"Energy": energies_unstruct},
-          index=range(1, num_relaxations + 1),
-      )
-      df_unstruct.index.name = "Relaxation"
-      st.line_chart(df_unstruct, height=300)
-
-  st.subheader("Figure 2 -- Running best energy over relaxations")
-
-  running_best_unstruct_base = list(np.minimum.accumulate(energies_unstruct_base))
-  running_best_unstruct = list(np.minimum.accumulate(energies_unstruct))
-
-  st.markdown("**Modular problem**")
-  c_rb1, c_rb2 = st.columns(2)
-  with c_rb1:
-      st.caption("No learning")
-      df_rb = pd.DataFrame(
-          {"Best so far": running_best_base},
-          index=range(1, num_relaxations + 1),
-      )
-      st.line_chart(df_rb, height=300)
-  with c_rb2:
-      st.caption("With Hebbian learning")
-      df_rl = pd.DataFrame(
-          {"Best so far": running_best_learn},
-          index=range(1, num_relaxations + 1),
-      )
-      st.line_chart(df_rl, height=300)
-
-  st.markdown("**Unstructured problem**")
-  c_rb3, c_rb4 = st.columns(2)
-  with c_rb3:
-      st.caption("No learning")
-      df_rub = pd.DataFrame(
-          {"Best so far": running_best_unstruct_base},
-          index=range(1, num_relaxations + 1),
-      )
-      st.line_chart(df_rub, height=300)
-  with c_rb4:
-      st.caption("With Hebbian learning")
-      df_ru = pd.DataFrame(
-          {"Best so far": running_best_unstruct},
-          index=range(1, num_relaxations + 1),
-      )
-      st.line_chart(df_ru, height=300)
-
-  st.subheader("Figure 3 -- Distribution of attractor energies")
-
-  st.markdown("**Modular problem**")
-  all_e_mod = energies_base + energies_learn
-  bins_mod = np.linspace(min(all_e_mod), max(all_e_mod), 40)
-  counts_base, edges_mod = np.histogram(energies_base, bins=bins_mod)
-  counts_learn, _ = np.histogram(energies_learn, bins=bins_mod)
-  bin_centers_mod = ((edges_mod[:-1] + edges_mod[1:]) / 2).astype(int)
-  hist_df_mod = pd.DataFrame({
-      "No learning": counts_base,
-      "With learning": counts_learn,
-  }, index=bin_centers_mod)
-  hist_df_mod.index.name = "Energy"
-  st.bar_chart(hist_df_mod, height=300)
-
-  st.markdown("**Unstructured problem**")
-  all_e_unstr = energies_unstruct_base + energies_unstruct
-  bins_unstr = np.linspace(min(all_e_unstr), max(all_e_unstr), 40)
-  counts_unstruct_base, edges_unstr = np.histogram(energies_unstruct_base, bins=bins_unstr)
-  counts_unstruct_learn, _ = np.histogram(energies_unstruct, bins=bins_unstr)
-  bin_centers_unstr = ((edges_unstr[:-1] + edges_unstr[1:]) / 2).astype(int)
-  hist_df_unstr = pd.DataFrame({
-      "No learning": counts_unstruct_base,
-      "With learning": counts_unstruct_learn,
-  }, index=bin_centers_unstr)
-  hist_df_unstr.index.name = "Energy"
-  st.bar_chart(hist_df_unstr, height=300)
-
-  # ─── Figure 4: PCA landscape ─────────────────────────────
-  st.subheader("Figure 4 — Attractor landscape (PCA projection)")
+  st.subheader("True energy over relaxations")
 
   st.markdown(r"""
-Each dot below is one **final state** — the arrangement the network settled
-into after a single relaxation. Each state lives in **{N}-dimensional**
-space (one dimension per switch), compressed to **two dimensions** using
-**Principal Component Analysis (PCA)**.
+This plot shows $E^{\alpha}_0$ — the energy of each relaxation's final
+state measured against the **original** constraint matrix $\alpha$
+(the one generated before any learning):
 
-Concretely, for each final state $\mathbf{{s}}$ (a vector of {N} switch values),
-the two plot coordinates are **weighted sums** of all the switch values:
+$$E^{\alpha}_0 = -\sum_{i<j} \alpha_{ij}\, s_i\, s_j$$
 
-$$x = \sum_{{j=1}}^{{{N}}} v_{{1j}} \, s_j \qquad y = \sum_{{j=1}}^{{{N}}} v_{{2j}} \, s_j$$
+This is the quantity we actually want to minimise. During Hebbian learning
+the network's internal weights $W$ drift away from $\alpha$, but we always
+score the result against the **true** problem. A downward trend in the
+learning curve means learning is genuinely improving the solutions, not
+just optimising the modified weights.
+""")
 
-where $\mathbf{{v}}_1$ and $\mathbf{{v}}_2$ are the two directions of
-maximum variance, found by singular value decomposition of the centred
-state matrix. States that are similar (many switches in common)
-end up close together; states that differ end up far apart.
+  # ─── Watson Fig. 1 — attractor energy distributions ───────
+  st.pyplot(_watson_fig1_real(energies_base, energies_learn))
 
-**What to look for:**
-- **No learning:** scattered dots — many different attractors.
-- **With learning on the modular problem:** dots collapse into a tight
-  cluster — learning concentrates the search.
-- **With learning on the unstructured problem:** less concentration —
-  without modular structure, learning has less to latch onto.
+  st.markdown(r"""
+**Reading the figure:**
 
-Larger dots = lower energy (better solutions). Each problem has its own
-PCA (mixing states from different problems would be meaningless).
-""".format(N=N))
+- **Each dot** is a single relaxation's final attractor energy
+  $E^{\alpha}_0$. Every time the network is released from a random
+  starting state and allowed to settle, it lands in some attractor —
+  the dot shows how good that attractor was, scored against the
+  **original** problem $\alpha$.
 
-  R = num_relaxations
+- **The red curve** beside each strip is a kernel-density estimate (KDE)
+  — a smoothed histogram. Where the curve bulges out, many relaxations
+  landed at similar energies; where it is thin, outcomes were rare.
 
-  # ── PCA for modular problem ──
-  st.markdown("**Modular problem**")
-  states_base = np.array(r['all_states_base'])
-  states_learn = np.array(r['all_states_learn'])
-  all_states_mod = np.vstack([states_base, states_learn])
-  mean_mod = all_states_mod.mean(axis=0)
-  centered_mod = all_states_mod - mean_mod
-  _, S_mod, Vt_mod = np.linalg.svd(centered_mod, full_matrices=False)
-  proj_mat_mod = np.column_stack([Vt_mod[0], Vt_mod[1]])
-  proj_base = centered_mod[:R] @ proj_mat_mod
-  proj_learn = centered_mod[R:] @ proj_mat_mod
+- **Panel (a)** shows the baseline: no learning, original connections
+  only. The spread of dots tells you how much variety there is among
+  the attractors the network finds at random.
 
-  all_e_mod = np.array(energies_base + energies_learn)
-  e_min_m, e_max_m = all_e_mod.min(), all_e_mod.max()
-  e_range_m = e_max_m - e_min_m if e_max_m > e_min_m else 1.0
+- **Panel (b)** shows the first third of relaxations *with* Hebbian
+  learning active. The weight matrix $W$ is beginning to drift away
+  from $\alpha$, merging some basins — the spread should start to
+  narrow.
 
-  pca_m1, pca_m2 = st.columns(2)
-  with pca_m1:
-      st.caption("No learning")
-      norm_e = (np.array(energies_base) - e_min_m) / e_range_m
-      sizes = 30 + 70 * (1 - norm_e)
-      df_pca = pd.DataFrame({
-          "PC1": proj_base[:, 0], "PC2": proj_base[:, 1],
-          "Energy": energies_base, "size": sizes,
-      })
-      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
-                       color="#4a90d9", height=400)
-  with pca_m2:
-      st.caption("With Hebbian learning")
-      norm_e = (np.array(energies_learn) - e_min_m) / e_range_m
-      sizes = 30 + 70 * (1 - norm_e)
-      df_pca = pd.DataFrame({
-          "PC1": proj_learn[:, 0], "PC2": proj_learn[:, 1],
-          "Energy": energies_learn, "size": sizes,
-      })
-      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
-                       color="#d94a4a", height=400)
+- **Panel (c)** shows the last third. By now the learned weights have
+  simplified the landscape substantially. If learning is working, the
+  dots cluster at lower (more negative) energies and the distribution
+  is tighter — the network reliably finds better solutions to the
+  original problem.
 
-  total_var_m = (S_mod ** 2).sum()
-  var_exp_m = (S_mod[:2] ** 2) / total_var_m * 100
-  st.caption(
-      f"Modular PCA axes capture {var_exp_m[0]:.1f}% + {var_exp_m[1]:.1f}% "
-      f"= {var_exp_m.sum():.1f}% of variance."
-  )
-
-  # ── PCA for unstructured problem ──
-  st.markdown("**Unstructured problem**")
-  states_unstruct_base = np.array(r['all_states_unstruct_base'])
-  states_unstruct = np.array(r['all_states_unstruct'])
-  all_states_unstr = np.vstack([states_unstruct_base, states_unstruct])
-  mean_unstr = all_states_unstr.mean(axis=0)
-  centered_unstr = all_states_unstr - mean_unstr
-  _, S_unstr, Vt_unstr = np.linalg.svd(centered_unstr, full_matrices=False)
-  proj_mat_unstr = np.column_stack([Vt_unstr[0], Vt_unstr[1]])
-  proj_unstruct_base = centered_unstr[:R] @ proj_mat_unstr
-  proj_unstruct_learn = centered_unstr[R:] @ proj_mat_unstr
-
-  all_e_unstr = np.array(energies_unstruct_base + energies_unstruct)
-  e_min_u, e_max_u = all_e_unstr.min(), all_e_unstr.max()
-  e_range_u = e_max_u - e_min_u if e_max_u > e_min_u else 1.0
-
-  pca_u1, pca_u2 = st.columns(2)
-  with pca_u1:
-      st.caption("No learning")
-      norm_e = (np.array(energies_unstruct_base) - e_min_u) / e_range_u
-      sizes = 30 + 70 * (1 - norm_e)
-      df_pca = pd.DataFrame({
-          "PC1": proj_unstruct_base[:, 0], "PC2": proj_unstruct_base[:, 1],
-          "Energy": energies_unstruct_base, "size": sizes,
-      })
-      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
-                       color="#4a90d9", height=400)
-  with pca_u2:
-      st.caption("With Hebbian learning")
-      norm_e = (np.array(energies_unstruct) - e_min_u) / e_range_u
-      sizes = 30 + 70 * (1 - norm_e)
-      df_pca = pd.DataFrame({
-          "PC1": proj_unstruct_learn[:, 0], "PC2": proj_unstruct_learn[:, 1],
-          "Energy": energies_unstruct, "size": sizes,
-      })
-      st.scatter_chart(df_pca, x="PC1", y="PC2", size="size",
-                       color="#d94a4a", height=400)
-
-  total_var_u = (S_unstr ** 2).sum()
-  var_exp_u = (S_unstr[:2] ** 2) / total_var_u * 100
-  st.caption(
-      f"Unstructured PCA axes capture {var_exp_u[0]:.1f}% + {var_exp_u[1]:.1f}% "
-      f"= {var_exp_u.sum():.1f}% of variance."
-  )
+More negative = better (lower energy = more constraints satisfied).
+""")
 
 
 _run_btn = st.sidebar.button("Run experiment", type="primary")

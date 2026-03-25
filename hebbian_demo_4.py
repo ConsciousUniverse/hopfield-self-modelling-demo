@@ -296,6 +296,7 @@ def _render_glossary():
 | **Hebbian learning** | "What fires together, wires together." Applied **concurrently at every state update** during relaxation — not just at the end. Each tiny nudge strengthens the connection between switches that are currently in the same state. |
 | **Attractor** | Another word for a local minimum — a stable arrangement that the system is "attracted" toward during relaxation. |
 | **Hamming space** | A way of thinking about distance between switch arrangements. Two arrangements are "close" if they differ in only a few switches, and "far apart" if they differ in many. The **Hamming distance** between two arrangements is simply the number of switches that are different. For example, if arrangement A and arrangement B disagree on 12 out of 150 switches, they are 12 apart in Hamming space. |
+| **Weighted Max-2-SAT** | The formal name for the type of problem the network is solving. Each pairwise constraint involves exactly **2** variables (switches) and has a weight (|α|). The goal is to **maximise** the total weight of satisfied constraints — equivalently, to **minimise** the energy. The modular structure means intra-group clauses carry large weights and inter-group clauses carry small weights. |
 """)
 
 
@@ -496,6 +497,7 @@ _WATSON_DEFAULTS = {
     "num_relaxations": 300,
     "tau_multiplier": 10,
     "delta": 0.00025,
+    "num_trials": 100,
 }
 
 # Initialise defaults once (before any widget is created)
@@ -503,13 +505,14 @@ for _k, _v in _WATSON_DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
+# Handle reset: apply defaults before widgets are instantiated
+if st.session_state.get('_reset_defaults'):
+    for _k, _v in _WATSON_DEFAULTS.items():
+        st.session_state[_k] = _v
+    st.session_state['_reset_defaults'] = False
+
 with st.sidebar:
     st.header("Controls")
-
-    if st.button("Reset to Watson defaults"):
-        for k, v in _WATSON_DEFAULTS.items():
-            st.session_state[k] = v
-        st.rerun()
 
     st.subheader("Problem structure")
     N_MODULES = st.slider(
@@ -629,6 +632,31 @@ with st.sidebar:
         ),
     )
 
+    st.subheader("Multi-trial analysis")
+    NUM_TRIALS = st.slider(
+        "Number of trials",
+        min_value=1,
+        max_value=500,
+        step=1,
+        key="num_trials",
+        help=(
+            "Default **100** (Watson). Each trial generates a new random "
+            "problem instance and runs both a baseline and a learning "
+            "experiment using the **same** random initial conditions and "
+            "update order. This lets us measure how reliably learning "
+            "outperforms the baseline across many different problems."
+        ),
+    )
+
+    st.divider()
+    _run_btn = st.button("Run single experiment", use_container_width=True)
+    _multi_btn = st.button("Run multi-trial analysis", use_container_width=True)
+    st.button(
+        "Reset to Watson defaults",
+        use_container_width=True,
+        on_click=lambda: st.session_state.update({'_reset_defaults': True}),
+    )
+
 RNG = np.random.default_rng()
 
 # ─── UI HELPERS ─────────────────────────────────────────────
@@ -680,18 +708,15 @@ def _run_experiment(run):
     TAU = tau_multiplier * N
     DELTA_PER_UPDATE = delta / TAU
 
-    with st.status("Running experiment...", expanded=True) as status:
-        status.update(label="Phase 1: relaxing without learning...", state="running")
-        energies_base, best_e_base, best_s_base, _states_base = run_baseline(
-            alpha, num_relaxations, RNG, tau=TAU,
-        )
-
-        status.update(label="Phase 2: relaxing with Hebbian learning...", state="running")
-        energies_learn, best_e_learn, best_s_learn, _states_learn = run_with_learning(
-            alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
-        )
-
-        status.update(label="Experiment complete!", state="complete", expanded=False)
+    progress = st.progress(0, text="Running experiment...")
+    energies_base, best_e_base, best_s_base, _states_base = run_baseline(
+        alpha, num_relaxations, RNG, tau=TAU,
+    )
+    progress.progress(50, text="Running experiment...")
+    energies_learn, best_e_learn, best_s_learn, _states_learn = run_with_learning(
+        alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
+    )
+    progress.empty()
 
     # Store everything in session state so results survive reruns.
     st.session_state.results = {
@@ -716,203 +741,389 @@ def _run_experiment(run):
 def _render_results():
   """Render results from session state (survives widget interactions)."""
   if 'results' not in st.session_state:
-    st.info("Adjust parameters in the sidebar, then click **Run experiment**.")
     return
 
-  r = st.session_state.results
-  N = r['N']
-  num_relaxations = r['num_relaxations']
-  energies_base = r['energies_base']
-  energies_learn = r['energies_learn']
-  best_e_base = r['best_e_base']
-  best_e_learn = r['best_e_learn']
-  best_s_base = r['best_s_base']
-  best_s_learn = r['best_s_learn']
+  _results_expander = st.expander("Single experiment results", expanded=True)
+  with _results_expander:
+    r = st.session_state.results
+    N = r['N']
+    num_relaxations = r['num_relaxations']
+    energies_base = r['energies_base']
+    energies_learn = r['energies_learn']
+    best_e_base = r['best_e_base']
+    best_e_learn = r['best_e_learn']
+    best_s_base = r['best_s_base']
+    best_s_learn = r['best_s_learn']
+  
+    if r['n_modules'] == 0:
+        st.info(
+            f"Generated an **unstructured** constraint problem: "
+            f"**{N}** switches with **uniform** connection strength "
+            f"(|\u03b1|={(r['intra_strength'] + r['inter_strength']) / 2:.3f}). "
+            f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
+            f"There are no groups \u2014 every pair of switches is connected "
+            f"equally strongly. Without modular structure there are fewer "
+            f"recurring sub-patterns for learning to exploit."
+        )
+    else:
+        st.info(
+            f"Generated a **modular** constraint problem: "
+            f"**{N}** switches in **{r['n_modules']}** modules of {r['module_size']}. "
+            f"**{r['n_intra']}** strong intra-module constraints "
+            f"(|\u03b1|={r['intra_strength']:.1f}), "
+            f"**{r['n_inter']}** weak inter-module constraints "
+            f"(|\u03b1|={r['inter_strength']:.3f}). "
+            f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
+            f"This structure creates many local minima that share recurring "
+            f"sub-patterns \u2014 exactly the condition where Hebbian learning "
+            f"can generalise."
+        )
+  
+    stats = analyse_results(
+        energies_base, energies_learn, best_e_base, best_e_learn,
+        num_relaxations,
+    )
+    base_mean = stats['base_mean']
+    base_std = stats['base_std']
+    learn_mean = stats['learn_mean']
+    learn_std = stats['learn_std']
+    tail = stats['tail']
+    learn_tail_mean = stats['learn_tail_mean']
+    learn_tail_std = stats['learn_tail_std']
+    improvement = stats['improvement']
+    learning_won = stats['learning_won']
+    unique_base = stats['unique_base']
+    unique_learn_tail = stats['unique_learn_tail']
+  
+    # ── Modular problem metrics ──
+    st.markdown("##### Results")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
+    with m2:
+        delta_e = best_e_learn - best_e_base
+        st.metric(
+            "With Hebbian learning",
+            f"{best_e_learn:.0f}",
+            delta=f"{delta_e:.0f} vs baseline",
+            delta_color="inverse",
+        )
+    with m3:
+        improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+        st.metric("Learning improvement", f"{improvement_pct:+.1f}%")
+  
+    st.markdown(
+        "Each image below shows the **best state vector** the network "
+        "found, laid out as a grid. Every square is one switch: "
+        "**white = ON (+1)**, **black = OFF (\u22121)**, "
+        "**grey = padding** (ignored \u2014 just fills the grid to a rectangle). "
+        "A good solution tends to show large uniform blocks of white or "
+        "black, reflecting agreement within modules."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("**No learning**")
+        st.image(state_to_img(best_s_base, N), width=120)
+        st.caption(f"Energy: {best_e_base:.0f}")
+    with c2:
+        st.write("**With learning**")
+        st.image(state_to_img(best_s_learn, N), width=120)
+        st.caption(f"Energy: {best_e_learn:.0f}")
+  
+    st.markdown(f"""
+  **Phase 1 (no learning):** {num_relaxations} relaxations from random starts.
+  
+  - Attractor energies ranged from **{min(energies_base):.0f}** to **{max(energies_base):.0f}**
+  - Mean energy: **{base_mean:.0f}** (std: {base_std:.0f})
+  - Best energy found: **{best_e_base:.0f}**
+  - Distinct energy levels visited: ~{unique_base}
+  
+  The network fell into many different local minima, scattered across a wide
+  band. No single attractor dominated.
+  
+  ---
+  
+  **Phase 2 (with Hebbian learning):** {num_relaxations} relaxations, same random
+  starting procedure, but with **concurrent Hebbian learning at every state
+  update** throughout each relaxation (Watson Eq. 3).
+  
+  - Best energy found: **{best_e_learn:.0f}**
+  - Mean energy over all relaxations: **{learn_mean:.0f}** (std: {learn_std:.0f})
+  - Mean energy over last {tail} relaxations: **{learn_tail_mean:.0f}** (std: {learn_tail_std:.0f})
+  - Distinct energy levels in last {tail} relaxations: ~{unique_learn_tail}
+  """)
+  
+    # Determine winner
+    if best_e_learn >= best_e_base:
+        st.markdown(f"""
+  **Learning did not beat the baseline** this time
+  (baseline best: **{best_e_base:.0f}**, with learning:
+  **{best_e_learn:.0f}**).
+  This can happen with too few relaxations or a learning rate that's too
+  high. Try adjusting the parameters.
+  """)
+        st.markdown("""
+  Note: conversely, learning can succeed when the learning rate is low.
+  In the limit of low learning rates — such that the system can visit a
+  sufficient sample of attractors between weight updates — Hebbian
+  updates accumulate reliable recurring sub-patterns rather than
+  overfitting transient fluctuations.
+  """)
+    else:
+        st.markdown(f"""
+  **Hebbian learning found the best solution** at **{best_e_learn:.0f}**
+  (baseline: {best_e_base:.0f}). In the last {tail} relaxations it
+  converged to just ~{unique_learn_tail} distinct energy level(s).
+  """)
+  
+    st.caption(
+        "All numbers above are computed directly from this run. "
+        "Re-running will generate a new random problem and produce "
+        "different numbers."
+    )
+  
+    # ─── E^α_0 plot: true energy over relaxations ────────────
+    st.divider()
+    st.subheader("True energy over relaxations")
+  
+    st.markdown(r"""
+  This plot shows $E^{\alpha}_0$ — the energy of each relaxation's final
+  state measured against the **original** constraint matrix $\alpha$
+  (the one generated before any learning):
+  
+  $$E^{\alpha}_0 = -\sum_{i<j} \alpha_{ij}\, s_i\, s_j$$
+  
+  This is the quantity we actually want to minimise. During Hebbian learning
+  the network's internal weights $W$ drift away from $\alpha$, but we always
+  score the result against the **true** problem. A downward trend in the
+  learning curve means learning is genuinely improving the solutions, not
+  just optimising the modified weights.
+  """)
+  
+    # ─── Watson Fig. 1 — attractor energy distributions ───────
+    st.pyplot(_watson_fig1_real(energies_base, energies_learn))
+  
+    st.markdown(r"""
+  **Reading the figure:**
+  
+  - **Each dot** is a single relaxation's final attractor energy
+    $E^{\alpha}_0$. Every time the network is released from a random
+    starting state and allowed to settle, it lands in some attractor —
+    the dot shows how good that attractor was, scored against the
+    **original** problem $\alpha$.
+  
+  - **The red curve** beside each strip is a kernel-density estimate (KDE)
+    — a smoothed histogram. Where the curve bulges out, many relaxations
+    landed at similar energies; where it is thin, outcomes were rare.
+  
+  - **Panel (a)** shows the baseline: no learning, original connections
+    only. The spread of dots tells you how much variety there is among
+    the attractors the network finds at random.
+  
+  - **Panel (b)** shows the first third of relaxations *with* Hebbian
+    learning active. The weight matrix $W$ is beginning to drift away
+    from $\alpha$, merging some basins — the spread should start to
+    narrow.
+  
+  - **Panel (c)** shows the last third. By now the learned weights have
+    simplified the landscape substantially. If learning is working, the
+    dots cluster at lower (more negative) energies and the distribution
+    is tighter — the network reliably finds better solutions to the
+    original problem.
+  
+  More negative = better (lower energy = more constraints satisfied).
+  """)
+  
 
-  if r['n_modules'] == 0:
-      st.info(
-          f"Generated an **unstructured** constraint problem: "
-          f"**{N}** switches with **uniform** connection strength "
-          f"(|\u03b1|={(r['intra_strength'] + r['inter_strength']) / 2:.3f}). "
-          f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
-          f"There are no groups \u2014 every pair of switches is connected "
-          f"equally strongly. Without modular structure there are fewer "
-          f"recurring sub-patterns for learning to exploit."
-      )
+# ─── MULTI-TRIAL ────────────────────────────────────────────
+def _run_multi_trial(run):
+  if not run:
+    return
+
+  n_modules = st.session_state.n_modules
+  module_size = st.session_state.module_size
+  intra_strength = st.session_state.intra_strength
+  inter_strength = st.session_state.inter_strength
+  positive_bias = st.session_state.positive_bias
+  num_relaxations = st.session_state.num_relaxations
+  delta = st.session_state.delta
+  tau_multiplier = st.session_state.tau_multiplier
+  num_trials = st.session_state.num_trials
+
+  if n_modules == 0:
+      N = module_size
   else:
-      st.info(
-          f"Generated a **modular** constraint problem: "
-          f"**{N}** switches in **{r['n_modules']}** modules of {r['module_size']}. "
-          f"**{r['n_intra']}** strong intra-module constraints "
-          f"(|\u03b1|={r['intra_strength']:.1f}), "
-          f"**{r['n_inter']}** weak inter-module constraints "
-          f"(|\u03b1|={r['inter_strength']:.3f}). "
-          f"{r['positive_bias']}% of constraints are positive (\"agree\"). "
-          f"This structure creates many local minima that share recurring "
-          f"sub-patterns \u2014 exactly the condition where Hebbian learning "
-          f"can generalise."
+      N = n_modules * module_size
+
+  TAU = tau_multiplier * N
+  DELTA_PER_UPDATE = delta / TAU
+
+  master_rng = np.random.default_rng()
+  trial_seeds = master_rng.integers(0, 2**63, size=num_trials)
+
+  best_base_list = []
+  best_learn_list = []
+  improvements = []
+  learning_won_count = 0
+
+  progress = st.progress(0, text="Running multi-trial analysis...")
+  for i, seed in enumerate(trial_seeds):
+      progress.progress((i + 1) / num_trials,
+                         text=f"Trial {i + 1} / {num_trials}")
+
+      # Each trial gets a new random problem instance
+      problem_rng = np.random.default_rng(seed)
+      if n_modules == 0:
+          uniform_strength = (intra_strength + inter_strength) / 2
+          alpha = generate_modular_problem(
+              1, N, uniform_strength, uniform_strength,
+              positive_bias, problem_rng,
+          )
+      else:
+          alpha = generate_modular_problem(
+              n_modules, module_size, intra_strength,
+              inter_strength, positive_bias, problem_rng,
+          )
+
+      # Watson: "The same 300 random initial conditions and the same
+      # random order of state updates are used for the learning and
+      # non-learning runs of each trial."
+      run_seed = problem_rng.integers(0, 2**63)
+      rng_base = np.random.default_rng(run_seed)
+      rng_learn = np.random.default_rng(run_seed)
+
+      _e_base, best_e_base, _s_base, _ = run_baseline(
+          alpha, num_relaxations, rng_base, tau=TAU,
+      )
+      _e_learn, best_e_learn, _s_learn, _ = run_with_learning(
+          alpha, num_relaxations, DELTA_PER_UPDATE, rng_learn, tau=TAU,
       )
 
-  stats = analyse_results(
-      energies_base, energies_learn, best_e_base, best_e_learn,
-      num_relaxations,
-  )
-  base_mean = stats['base_mean']
-  base_std = stats['base_std']
-  learn_mean = stats['learn_mean']
-  learn_std = stats['learn_std']
-  tail = stats['tail']
-  learn_tail_mean = stats['learn_tail_mean']
-  learn_tail_std = stats['learn_tail_std']
-  improvement = stats['improvement']
-  learning_won = stats['learning_won']
-  unique_base = stats['unique_base']
-  unique_learn_tail = stats['unique_learn_tail']
+      best_base_list.append(best_e_base)
+      best_learn_list.append(best_e_learn)
+      imp = ((best_e_base - best_e_learn) / abs(best_e_base) * 100
+             if best_e_base != 0 else 0.0)
+      improvements.append(imp)
+      if best_e_learn < best_e_base:
+          learning_won_count += 1
 
-  st.divider()
-  st.subheader("What happened?")
+  progress.empty()
 
-  # ── Modular problem metrics ──
-  st.markdown("##### Results")
-  m1, m2, m3 = st.columns(3)
-  with m1:
-      st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
-  with m2:
-      delta_e = best_e_learn - best_e_base
-      st.metric(
-          "With Hebbian learning",
-          f"{best_e_learn:.0f}",
-          delta=f"{delta_e:.0f} vs baseline",
-          delta_color="inverse",
-      )
-  with m3:
-      improvement_pct = (best_e_learn - best_e_base) / abs(best_e_base) * 100 if best_e_base != 0 else 0
-      st.metric("Learning improvement", f"{improvement_pct:+.1f}%")
-
-  st.markdown(
-      "Each image below shows the **best state vector** the network "
-      "found, laid out as a grid. Every square is one switch: "
-      "**white = ON (+1)**, **black = OFF (\u22121)**, "
-      "**grey = padding** (ignored \u2014 just fills the grid to a rectangle). "
-      "A good solution tends to show large uniform blocks of white or "
-      "black, reflecting agreement within modules."
-  )
-  c1, c2 = st.columns(2)
-  with c1:
-      st.write("**No learning**")
-      st.image(state_to_img(best_s_base, N), width=120)
-      st.caption(f"Energy: {best_e_base:.0f}")
-  with c2:
-      st.write("**With learning**")
-      st.image(state_to_img(best_s_learn, N), width=120)
-      st.caption(f"Energy: {best_e_learn:.0f}")
-
-  st.markdown(f"""
-**Phase 1 (no learning):** {num_relaxations} relaxations from random starts.
-
-- Attractor energies ranged from **{min(energies_base):.0f}** to **{max(energies_base):.0f}**
-- Mean energy: **{base_mean:.0f}** (std: {base_std:.0f})
-- Best energy found: **{best_e_base:.0f}**
-- Distinct energy levels visited: ~{unique_base}
-
-The network fell into many different local minima, scattered across a wide
-band. No single attractor dominated.
-
----
-
-**Phase 2 (with Hebbian learning):** {num_relaxations} relaxations, same random
-starting procedure, but with **concurrent Hebbian learning at every state
-update** throughout each relaxation (Watson Eq. 3).
-
-- Best energy found: **{best_e_learn:.0f}**
-- Mean energy over all relaxations: **{learn_mean:.0f}** (std: {learn_std:.0f})
-- Mean energy over last {tail} relaxations: **{learn_tail_mean:.0f}** (std: {learn_tail_std:.0f})
-- Distinct energy levels in last {tail} relaxations: ~{unique_learn_tail}
-""")
-
-  # Determine winner
-  if best_e_learn >= best_e_base:
-      st.markdown(f"""
-**Learning did not beat the baseline** this time
-(baseline best: **{best_e_base:.0f}**, with learning:
-**{best_e_learn:.0f}**).
-This can happen with too few relaxations or a learning rate that's too
-high. Try adjusting the parameters.
-""")
-      st.markdown("""
-Note: conversely, learning can succeed when the learning rate is low.
-In the limit of low learning rates — such that the system can visit a
-sufficient sample of attractors between weight updates — Hebbian
-updates accumulate reliable recurring sub-patterns rather than
-overfitting transient fluctuations.
-""")
-  else:
-      st.markdown(f"""
-**Hebbian learning found the best solution** at **{best_e_learn:.0f}**
-(baseline: {best_e_base:.0f}). In the last {tail} relaxations it
-converged to just ~{unique_learn_tail} distinct energy level(s).
-""")
-
-  st.caption(
-      "All numbers above are computed directly from this run. "
-      "Re-running will generate a new random problem and produce "
-      "different numbers."
-  )
-
-  # ─── E^α_0 plot: true energy over relaxations ────────────
-  st.divider()
-  st.subheader("True energy over relaxations")
-
-  st.markdown(r"""
-This plot shows $E^{\alpha}_0$ — the energy of each relaxation's final
-state measured against the **original** constraint matrix $\alpha$
-(the one generated before any learning):
-
-$$E^{\alpha}_0 = -\sum_{i<j} \alpha_{ij}\, s_i\, s_j$$
-
-This is the quantity we actually want to minimise. During Hebbian learning
-the network's internal weights $W$ drift away from $\alpha$, but we always
-score the result against the **true** problem. A downward trend in the
-learning curve means learning is genuinely improving the solutions, not
-just optimising the modified weights.
-""")
-
-  # ─── Watson Fig. 1 — attractor energy distributions ───────
-  st.pyplot(_watson_fig1_real(energies_base, energies_learn))
-
-  st.markdown(r"""
-**Reading the figure:**
-
-- **Each dot** is a single relaxation's final attractor energy
-  $E^{\alpha}_0$. Every time the network is released from a random
-  starting state and allowed to settle, it lands in some attractor —
-  the dot shows how good that attractor was, scored against the
-  **original** problem $\alpha$.
-
-- **The red curve** beside each strip is a kernel-density estimate (KDE)
-  — a smoothed histogram. Where the curve bulges out, many relaxations
-  landed at similar energies; where it is thin, outcomes were rare.
-
-- **Panel (a)** shows the baseline: no learning, original connections
-  only. The spread of dots tells you how much variety there is among
-  the attractors the network finds at random.
-
-- **Panel (b)** shows the first third of relaxations *with* Hebbian
-  learning active. The weight matrix $W$ is beginning to drift away
-  from $\alpha$, merging some basins — the spread should start to
-  narrow.
-
-- **Panel (c)** shows the last third. By now the learned weights have
-  simplified the landscape substantially. If learning is working, the
-  dots cluster at lower (more negative) energies and the distribution
-  is tighter — the network reliably finds better solutions to the
-  original problem.
-
-More negative = better (lower energy = more constraints satisfied).
-""")
+  st.session_state.multi_trial_results = {
+      'num_trials': num_trials,
+      'n_modules': n_modules,
+      'module_size': module_size,
+      'N': N,
+      'num_relaxations': num_relaxations,
+      'best_base': np.array(best_base_list),
+      'best_learn': np.array(best_learn_list),
+      'improvements': np.array(improvements),
+      'learning_won_count': learning_won_count,
+  }
 
 
-_run_btn = st.sidebar.button("Run experiment", type="primary")
+def _render_multi_trial():
+  if 'multi_trial_results' not in st.session_state:
+    return
+
+  with st.expander("Multi-trial analysis results", expanded=True):
+    mt = st.session_state.multi_trial_results
+    num_trials = mt['num_trials']
+    best_base = mt['best_base']
+    best_learn = mt['best_learn']
+    improvements = mt['improvements']
+    won = mt['learning_won_count']
+  
+    tied = int(np.sum(best_learn == best_base))
+    lost = num_trials - won - tied
+  
+    st.markdown(
+        f"**{num_trials}** trials, each on a different random problem "
+        f"instance ({mt['N']} switches"
+        + (f", {mt['n_modules']} modules of {mt['module_size']}"
+           if mt['n_modules'] > 0 else ", unstructured")
+        + f", {mt['num_relaxations']} relaxations per run). "
+        f"Within each trial the baseline and learning runs used the "
+        f"**same** random initial conditions and update order."
+    )
+  
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Learning won", f"{won} / {num_trials}",
+                   delta=f"{won / num_trials * 100:.0f}%")
+    with c2:
+        st.metric("Tied", f"{tied}")
+    with c3:
+        st.metric("Learning lost", f"{lost}")
+    with c4:
+        st.metric("Mean improvement",
+                   f"{np.mean(improvements):+.1f}%")
+  
+    # ── Histogram of improvements ──
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(7, 3))
+    ax.hist(improvements, bins='auto', color='steelblue', edgecolor='white',
+            alpha=0.85)
+    ax.axvline(0, color='grey', linewidth=0.8, linestyle='--')
+    ax.axvline(np.mean(improvements), color='crimson', linewidth=1.2,
+               label=f"mean = {np.mean(improvements):+.1f}%")
+    ax.set_xlabel("Improvement (%)")
+    ax.set_ylabel("Number of trials")
+    ax.set_title("Distribution of learning improvement across trials")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+  
+    st.markdown(
+        "Each bar counts how many trials fell in that improvement range. "
+        "Positive values (right of the dashed line) mean learning found a "
+        "lower-energy solution than the baseline; negative means it did "
+        "worse. The red line marks the mean."
+    )
+  
+    # ── Summary statistics table ──
+    import pandas as pd
+    summary = pd.DataFrame({
+        'Statistic': ['Mean', 'Median', 'Std dev', 'Min', 'Max'],
+        'Baseline best energy': [
+            f"{np.mean(best_base):.1f}",
+            f"{np.median(best_base):.1f}",
+            f"{np.std(best_base):.1f}",
+            f"{np.min(best_base):.1f}",
+            f"{np.max(best_base):.1f}",
+        ],
+        'Learning best energy': [
+            f"{np.mean(best_learn):.1f}",
+            f"{np.median(best_learn):.1f}",
+            f"{np.std(best_learn):.1f}",
+            f"{np.min(best_learn):.1f}",
+            f"{np.max(best_learn):.1f}",
+        ],
+        'Improvement %': [
+            f"{np.mean(improvements):+.1f}",
+            f"{np.median(improvements):+.1f}",
+            f"{np.std(improvements):.1f}",
+            f"{np.min(improvements):+.1f}",
+            f"{np.max(improvements):+.1f}",
+        ],
+    })
+    st.dataframe(summary, hide_index=True, use_container_width=True)
+  
+    st.caption(
+        "Energy values are the standard Hopfield energy "
+        "E\u1d45\u2080 = \u2212\u00bd \u2211 \u03b1\u1d62\u2c7c s\u1d62s\u2c7c. "
+        "More negative = more constraints satisfied = better. "
+        "The absolute magnitude depends on problem size and connection "
+        "strengths, so compare across columns (baseline vs learning) "
+        "rather than across rows. The Improvement % column normalises "
+        "the comparison: positive means learning found a lower-energy "
+        "(better) solution."
+    )
+  
+  
 _run_experiment(_run_btn)
+_run_multi_trial(_multi_btn)
 _render_results()
+_render_multi_trial()
 _render_info_sections()

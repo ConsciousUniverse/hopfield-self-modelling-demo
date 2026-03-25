@@ -718,6 +718,10 @@ def _run_experiment(run):
     )
     progress.empty()
 
+    # Bump counter so the expander resets to expanded=True.
+    st.session_state._results_run = st.session_state.get('_results_run', 0) + 1
+    st.session_state._results_just_ran = True
+
     # Store everything in session state so results survive reruns.
     st.session_state.results = {
         'N': N,
@@ -743,7 +747,8 @@ def _render_results():
   if 'results' not in st.session_state:
     return
 
-  _results_expander = st.expander("Single experiment results", expanded=True)
+  _run_id = st.session_state.get('_results_run', 0)
+  _results_expander = st.expander(f"Single experiment results (run {_run_id})", expanded=True)
   with _results_expander:
     r = st.session_state.results
     N = r['N']
@@ -1009,6 +1014,9 @@ def _run_multi_trial(run):
 
   progress.empty()
 
+  st.session_state._multi_run = st.session_state.get('_multi_run', 0) + 1
+  st.session_state._multi_just_ran = True
+
   st.session_state.multi_trial_results = {
       'num_trials': num_trials,
       'n_modules': n_modules,
@@ -1026,7 +1034,8 @@ def _render_multi_trial():
   if 'multi_trial_results' not in st.session_state:
     return
 
-  with st.expander("Multi-trial analysis results", expanded=True):
+  _mt_id = st.session_state.get('_multi_run', 0)
+  with st.expander(f"Multi-trial analysis results (run {_mt_id})", expanded=True):
     mt = st.session_state.multi_trial_results
     num_trials = mt['num_trials']
     best_base = mt['best_base']

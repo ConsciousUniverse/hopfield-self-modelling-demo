@@ -27,11 +27,19 @@ This is *not* pattern recall. It is a combinatorial optimisation puzzle over 2^N
 
 The switches are arranged in **groups** (default: 30 groups of 5). Connections within a group are **strong** (magnitude 1.0); connections between groups are **weak** (magnitude 0.01). This creates a nearly-decomposable modular structure — exactly the kind of problem where Hebbian learning shines.
 
-### The three phases
+### The process
 
-1. **Without learning (baseline)** — The network tries many random starting arrangements. Each "relaxation" picks one switch at a time, updates it based on all its neighbours, and repeats for τ = 10N steps. Energy is measured at the end, then the arrangement is thrown away and we start fresh. The connections never change. Because the same fixed connections keep producing similar outcomes, certain patterns recur across relaxations — these regularities are what Phase 2 exploits.
+During a single **relaxation**, a switch is picked at random and updated (set to +1 or −1 based on its neighbours) — only that one switch changes. This is repeated **τ = R × N** times, where R is a configurable multiplier and N is the number of switches (Watson default: R = 10, N = 150, so τ = 1,500). In theory each switch could be updated ~R times, though in practice some will be picked more and some less, since the selection is random. By the end of these updates the network has usually settled, and we record its energy.
 
-2. **Flat Hebbian learning** — The same process, but now at every single state update, every connection in the whole network gets a tiny nudge: pairs of switches that are currently the same get a slightly stronger "agree" connection; pairs that differ get a slightly stronger "disagree" connection. The switch arrangement is still thrown away between relaxations, but the adjusted connection strengths are kept. Over hundreds of relaxations, the nudges accumulate fastest for recurring patterns, gradually reshaping the energy landscape until the network reliably finds solutions **better than any it has seen before**.
+This entire process is then repeated for a number of relaxations (Watson default: 300; user-configurable). Each relaxation starts fresh from a new random switch arrangement.
+
+### The two phases
+
+1. **Without learning (baseline)** — The connection weights are fixed throughout. The network explores many random starting points, settling into different local minima each time. Because the same fixed connections keep producing similar outcomes, certain patterns recur across relaxations — these regularities are what Phase 2 exploits.
+
+2. **With Hebbian learning** — The same relaxation process, but now at every single update step, every connection in the whole network gets a tiny nudge: pairs of switches that are currently the same get a slightly stronger "agree" connection; pairs that differ get a slightly stronger "disagree" connection. The switch arrangement is still thrown away between relaxations, but the adjusted connection weights carry forward. Over hundreds of relaxations, the nudges accumulate fastest for recurring patterns, gradually reshaping the energy landscape until the network reliably finds solutions **better than any it has seen before**.
+
+All parameters (number of switches, modules, relaxation multiplier, number of relaxations, learning rate) are configurable in the sidebar.
 
 To see what happens without modular structure, set the number of modules to **0**. This creates an unstructured problem with uniform connection strengths — every pair of switches is connected equally strongly. Because there are no recurring sub-patterns for learning to latch onto, the improvement is typically much smaller. This demonstrates that **modular structure is what makes Hebbian learning effective**.
 

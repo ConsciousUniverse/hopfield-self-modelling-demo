@@ -23,7 +23,7 @@ def _watson_fig1_real(energies_base, energies_learn):
     (b) Early learning — first third of relaxations with Hebbian learning
     (c) Late learning — last third of relaxations with Hebbian learning
 
-    This is the honest, data-driven version of Watson et al. Fig. 1:
+    This is the honest, data-driven version of Watson et al., 2011, Fig. 1:
     the distribution of visited attractors narrows and shifts to lower
     energy as learning simplifies the landscape.
     """
@@ -90,7 +90,7 @@ def _watson_fig1_real(energies_base, energies_learn):
 st.set_page_config(page_title="Self-Modelling Hopfield Network", layout="wide")
 st.title("Self-Modelling: How a Network Learns to Optimise")
 st.caption(
-    "Demonstrating the mechanism from Watson, Buckley & Mills "
+    "Demonstrating the mechanism from Watson, Buckley & Mills 2011"
     "— *Optimisation in Self-modelling Complex Adaptive Systems* "
     "([Complexity, 2011](https://doi.org/10.1002/cplx.20346))"
 )
@@ -283,13 +283,18 @@ def _render_info_sections():
 
 # ─── PLAIN-ENGLISH GLOSSARY ─────────────────────────────────
 def _render_glossary():
+    _n_mod = st.session_state.get('n_modules', _WATSON_DEFAULTS['n_modules'])
+    _mod_sz = st.session_state.get('module_size', _WATSON_DEFAULTS['module_size'])
+    _N = _n_mod * _mod_sz if _n_mod > 0 else _mod_sz
+    _tau_m = st.session_state.get('tau_multiplier', _WATSON_DEFAULTS['tau_multiplier'])
+    _tau = _tau_m * _N
     with st.expander("Glossary — what the jargon means"):
-        st.markdown(r"""
+        st.markdown(f"""
 | Term | What it means |
 |------|---------------|
 | **Constraint** | A rule between two switches, e.g. "switch 3 and switch 7 should be the same." Rules within a group are strong; rules between groups are weak but collectively significant. |
 | **Energy** | A single number measuring how badly the current arrangement violates the constraints. Lower energy = fewer violations = better solution. |
-| **Relaxation** | One "attempt" at solving the problem. The network starts from a random arrangement, then updates **one randomly-chosen switch at a time** for exactly **10 × N** steps (Watson: *"length of each relaxation is 10N state updates"*). By the end, the network has usually settled near a local minimum. |
+| **Relaxation** | One "attempt" at solving the problem. The network starts from a random arrangement, then updates **one randomly-chosen switch at a time** for exactly **τ = {_tau:,}** steps (relaxation length multiplier ({_tau_m}) × N ({_N}) switches). By the end, the network has usually settled near a local minimum. |
 | **Local minimum** | A settled arrangement where no *individual* switch can improve things by flipping. It's stable, but it might not be the best overall — just the nearest stable point from where you started. |
 | **Global minimum** | The best possible arrangement across *all* configurations — the one that satisfies the most constraints. With 150 switches this is extremely hard to find. |
 | **Basin of attraction** | The set of all random starting points that lead to the same settled arrangement. Bigger basin = more starting points lead there = this arrangement is found more often. |
@@ -385,7 +390,7 @@ updated: it looks at all its neighbours' current states and the connection
 strengths, and flips (or stays) accordingly. This repeats for exactly
 $\tau = {st.session_state.get('tau_multiplier', 10)}N$ steps — e.g. {st.session_state.get('tau_multiplier', 10) * 150:,} steps for 150 switches.
 
-The update rule (Watson Eq. 1):
+The update rule (Watson et al., 2011, Eq. 1):
 
 $$s_i \leftarrow \operatorname{sign}\!\left(\sum_j w_{ij}\, s_j\right)$$
 
@@ -515,6 +520,7 @@ with st.sidebar:
     st.header("Controls")
 
     st.subheader("Problem structure")
+    _switches_slot = st.container()
     N_MODULES = st.slider(
         "Number of modules",
         min_value=0,
@@ -531,19 +537,24 @@ with st.sidebar:
             "is what makes Hebbian learning effective."
         ),
     )
-    MODULE_SIZE = st.slider(
-        "Switches per module",
-        min_value=2,
-        max_value=20,
-        step=1,
-        key="module_size",
-        help=(
-            "Default **5**. "
-            "Larger modules create more internal structure within each "
-            "group. The total number of switches (modules \u00d7 size) "
-            "also affects how long each run takes."
-        ),
+    _switches_label = (
+        "Number of switches (N)" if N_MODULES == 0
+        else "Switches per module"
     )
+    with _switches_slot:
+        MODULE_SIZE = st.number_input(
+            _switches_label,
+            min_value=2,
+            max_value=500,
+            step=1,
+            key="module_size",
+            help=(
+                "Default **5**. "
+                "Larger modules create more internal structure within each "
+                "group. The total number of switches (modules \u00d7 size) "
+                "also affects how long each run takes."
+            ),
+        )
     INTRA_STRENGTH = st.slider(
         "Intra-module constraint strength",
         min_value=0.1,
@@ -640,7 +651,7 @@ with st.sidebar:
         step=1,
         key="num_trials",
         help=(
-            "Default **100** (Watson). Each trial generates a new random "
+            "Default **100** (Watson et al., 2011). Each trial generates a new random "
             "problem instance and runs both a baseline and a learning "
             "experiment using the **same** random initial conditions and "
             "update order. This lets us measure how reliably learning "
@@ -648,9 +659,25 @@ with st.sidebar:
         ),
     )
 
+    def _request_single():
+        st.session_state.pop('results', None)
+        st.session_state.pop('multi_trial_results', None)
+
+    def _request_multi():
+        st.session_state.pop('results', None)
+        st.session_state.pop('multi_trial_results', None)
+
     st.divider()
-    _run_btn = st.button("Run single experiment", use_container_width=True)
-    _multi_btn = st.button("Run multi-trial analysis", use_container_width=True)
+    _run_btn = st.button(
+        "Run single experiment",
+        use_container_width=True,
+        on_click=_request_single,
+    )
+    _multi_btn = st.button(
+        "Run multi-trial analysis",
+        use_container_width=True,
+        on_click=_request_multi,
+    )
     st.button(
         "Reset to Watson defaults",
         use_container_width=True,
@@ -685,34 +712,35 @@ def _run_experiment(run):
 
     tau_multiplier = st.session_state.tau_multiplier
 
-    if n_modules == 0:
-        # Unstructured: use module_size as total N, uniform strength
-        N = module_size
-        uniform_strength = (intra_strength + inter_strength) / 2
-        alpha = generate_modular_problem(
-            1, N, uniform_strength, uniform_strength,
-            positive_bias, RNG,
-        )
-        n_intra = 0
-        n_inter = N * (N - 1) // 2
-    else:
-        N = n_modules * module_size
-        alpha = generate_modular_problem(
-            n_modules, module_size, intra_strength,
-            inter_strength, positive_bias, RNG,
-        )
-        n_intra = n_modules * (module_size * (module_size - 1) // 2)
-        n_inter = N * (N - 1) // 2 - n_intra
+    with st.spinner("Generating problem..."):
+      if n_modules == 0:
+          # Unstructured: use module_size as total N, uniform strength
+          N = module_size
+          uniform_strength = (intra_strength + inter_strength) / 2
+          alpha = generate_modular_problem(
+              1, N, uniform_strength, uniform_strength,
+              positive_bias, RNG,
+          )
+          n_intra = 0
+          n_inter = N * (N - 1) // 2
+      else:
+          N = n_modules * module_size
+          alpha = generate_modular_problem(
+              n_modules, module_size, intra_strength,
+              inter_strength, positive_bias, RNG,
+          )
+          n_intra = n_modules * (module_size * (module_size - 1) // 2)
+          n_inter = N * (N - 1) // 2 - n_intra
 
     N_PAIRS = N * (N - 1) // 2
     TAU = tau_multiplier * N
     DELTA_PER_UPDATE = delta / TAU
 
-    progress = st.progress(0, text="Running experiment...")
+    progress = st.progress(0, text="Running baseline...")
     energies_base, best_e_base, best_s_base, _states_base = run_baseline(
         alpha, num_relaxations, RNG, tau=TAU,
     )
-    progress.progress(50, text="Running experiment...")
+    progress.progress(50, text="Running with learning...")
     energies_learn, best_e_learn, best_s_learn, _states_learn = run_with_learning(
         alpha, num_relaxations, DELTA_PER_UPDATE, RNG, tau=TAU,
     )
@@ -733,6 +761,8 @@ def _run_experiment(run):
         'n_intra': n_intra,
         'n_inter': n_inter,
         'num_relaxations': num_relaxations,
+        'tau_multiplier': tau_multiplier,
+        'delta': delta,
         'energies_base': energies_base,
         'energies_learn': energies_learn,
         'best_e_base': best_e_base,
@@ -850,7 +880,7 @@ def _render_results():
   
   **Phase 2 (with Hebbian learning):** {num_relaxations} relaxations, same random
   starting procedure, but with **concurrent Hebbian learning at every state
-  update** throughout each relaxation (Watson Eq. 3).
+  update** throughout each relaxation (Watson et al., 2011, Eq. 3).
   
   - Best energy found: **{best_e_learn:.0f}**
   - Mean energy over all relaxations: **{learn_mean:.0f}** (std: {learn_std:.0f})
@@ -904,6 +934,164 @@ def _render_results():
   learning curve means learning is genuinely improving the solutions, not
   just optimising the modified weights.
   """)
+
+    # ─── Scatter: energy over time ───────────────────────────
+    fig_scatter, ax_scatter = plt.subplots(figsize=(10, 4))
+    xs = np.arange(1, num_relaxations + 1)
+    ax_scatter.scatter(xs, energies_base, s=12, alpha=0.5,
+                       color='#E8913A', label='No learning', zorder=2)
+    ax_scatter.scatter(xs, energies_learn, s=12, alpha=0.5,
+                       color='#2166AC', label='With learning', zorder=3)
+    ax_scatter.set_xlabel('Relaxation number')
+    ax_scatter.set_ylabel(r'$E^{\alpha}_0$  (true energy)')
+    _tau_mult = r.get('tau_multiplier', st.session_state.get('tau_multiplier', 10))
+    _delta_val = r.get('delta', st.session_state.get('delta', 0.00025))
+    if r['n_modules'] == 0:
+        _subtitle = (f"N={N}  |  unstructured  |  "
+                     f"\u03c4={_tau_mult}\u00d7N={_tau_mult * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  "
+                     f"relaxations={num_relaxations}")
+    else:
+        _subtitle = (f"N={N} ({r['n_modules']}\u00d7{r['module_size']})  |  "
+                     f"\u03c4={_tau_mult}\u00d7N={_tau_mult * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  "
+                     f"relaxations={num_relaxations}")
+    ax_scatter.set_title('Attractor energy over the course of learning\n'
+                         + _subtitle, fontsize=10)
+    ax_scatter.legend(fontsize=8, loc='upper right')
+    ax_scatter.spines['top'].set_visible(False)
+    ax_scatter.spines['right'].set_visible(False)
+    fig_scatter.tight_layout()
+    st.pyplot(fig_scatter)
+    plt.close(fig_scatter)
+
+    _tau_m = st.session_state.get('tau_multiplier', 10)
+    _tau = _tau_m * N
+
+    # ── Dynamic convergence analysis ─────────────────────────
+    _el = np.array(energies_learn)
+    _eb = np.array(energies_base)
+    _base_spread = float(np.std(_eb))
+    _base_mean_e = float(np.mean(_eb))
+
+    # Find where learning "converges": rolling std over a window drops
+    # below 10% of the baseline spread.  Scan from the start.
+    _win = max(10, num_relaxations // 15)
+    _conv_relax = None  # relaxation index where convergence detected
+    _threshold = _base_spread * 0.10
+    for _ci in range(0, len(_el) - _win + 1):
+        if np.std(_el[_ci : _ci + _win]) < _threshold:
+            _conv_relax = _ci
+            break
+
+    _conv_fraction = _conv_relax / num_relaxations if _conv_relax is not None else None
+    _final_learn_mean = float(np.mean(_el[-_win:]))
+    _final_learn_std = float(np.std(_el[-_win:]))
+    _improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+
+    # Baseline trend (should be flat; flag if not)
+    _base_first_half = float(np.mean(_eb[:num_relaxations // 2]))
+    _base_second_half = float(np.mean(_eb[num_relaxations // 2:]))
+    _base_drift = abs(_base_second_half - _base_first_half)
+
+    # Build the descriptive text
+    _desc_parts = []
+
+    _desc_parts.append(
+        f"Each dot is one relaxation's final energy scored against the "
+        f"original problem. There are **{num_relaxations}** dots per series "
+        f"— one for each relaxation."
+    )
+
+    # Orange dots analysis
+    if _base_drift < _base_spread * 0.1:
+        _desc_parts.append(
+            f"The **orange dots** (baseline) are scattered in a band around "
+            f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}) with no trend "
+            f"— as expected for fixed weights."
+        )
+    else:
+        _desc_parts.append(
+            f"The **orange dots** (baseline) are centred around "
+            f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}). "
+            f"There is some drift between halves ({_base_first_half:.0f} → "
+            f"{_base_second_half:.0f}), likely from randomness in this "
+            f"particular problem instance."
+        )
+
+    # Blue dots analysis — the key part
+    if _conv_relax is not None:
+        if _conv_fraction < 0.33:
+            _desc_parts.append(
+                f"The **blue dots** (with learning) converged **early** — "
+                f"by around relaxation {_conv_relax} (roughly "
+                f"{_conv_fraction * 100:.0f}% of the way through), the "
+                f"energies collapsed to a tight band near "
+                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
+                f"This means Hebbian learning quickly reinforced the first "
+                f"reliable pattern it encountered and locked in, reshaping "
+                f"the energy landscape so that almost every relaxation lands "
+                f"in the same deep basin. The flat tail looks impressive, "
+                f"but early lock-in means the system stopped exploring "
+                f"before it could discover whether a *better* arrangement "
+                f"existed. Because baseline also finds decent solutions for "
+                f"this problem instance, the relative improvement is modest "
+                f"(**{_improvement_pct:+.1f}%**)."
+            )
+        elif _conv_fraction < 0.66:
+            _desc_parts.append(
+                f"The **blue dots** (with learning) converged around "
+                f"relaxation {_conv_relax} — roughly "
+                f"**{_conv_fraction * 100:.0f}%** of the way through. "
+                f"The final energies cluster near "
+                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
+                f"Learning spent a moderate amount of time sampling diverse "
+                f"attractors before the accumulated Hebbian nudges "
+                f"reshaped the landscape enough to lock in. This balance "
+                f"between exploration and commitment produced an "
+                f"improvement of **{_improvement_pct:+.1f}%**."
+            )
+        else:
+            _desc_parts.append(
+                f"The **blue dots** (with learning) converged **late** — "
+                f"not until around relaxation {_conv_relax} "
+                f"({_conv_fraction * 100:.0f}% of the way through). "
+                f"The energies then settled near "
+                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
+                f"This late convergence is typically a sign of **better "
+                f"generalisation**: for most of the run, each relaxation "
+                f"landed in a *different* local minimum, and each "
+                f"contributed a slightly different Hebbian nudge. This "
+                f"diversity meant the weights accumulated a richer picture "
+                f"of the problem's modular structure before committing. "
+                f"By the time convergence kicked in, the reshaped landscape "
+                f"channelled the network into a genuinely superior basin — "
+                f"producing an improvement of **{_improvement_pct:+.1f}%**."
+            )
+    else:
+        # No clear convergence detected
+        _desc_parts.append(
+            f"The **blue dots** (with learning) did not clearly converge "
+            f"to a single energy level within {num_relaxations} "
+            f"relaxations. The final {_win} relaxations had mean energy "
+            f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}), "
+            f"compared to baseline std ≈ {_base_spread:.0f}. "
+            f"The improvement was **{_improvement_pct:+.1f}%**. "
+            f"Learning may need more relaxations, or a slower learning "
+            f"rate, to fully reshape the landscape."
+        )
+
+    # Watson's point
+    _desc_parts.append(
+        f"This illustrates Watson et al.'s central insight: learning works by "
+        f"extracting **regularities across many mediocre attempts**. "
+        f"It needs enough diverse experience before the signal "
+        f"overwhelms the noise. Fast lock-in = over-commitment to a "
+        f"local pattern; slow convergence = better generalisation from "
+        f"diverse experience."
+    )
+
+    st.markdown("\n\n".join(_desc_parts))
   
     # ─── Watson Fig. 1 — attractor energy distributions ───────
     st.pyplot(_watson_fig1_real(energies_base, energies_learn))
@@ -1131,8 +1319,27 @@ def _render_multi_trial():
     )
   
   
-_run_experiment(_run_btn)
-_run_multi_trial(_multi_btn)
+# Detect pending computation from a PREVIOUS rerun (pass 2).
+# This runs BEFORE rendering so the spinner/progress show on the
+# (already clean) page.
+_execute = st.session_state.pop('_execute_run', None)
+if _execute == 'single':
+    _run_experiment(True)
+elif _execute == 'multi':
+    _run_multi_trial(True)
+
 _render_results()
 _render_multi_trial()
 _render_info_sections()
+
+# If EITHER button was pressed THIS rerun, the on_click already cleared
+# old results.  The page above rendered clean (no results).  Now we set
+# a flag and call st.rerun() — Streamlit sends the current (clean) page
+# to the browser BEFORE starting the next run, which will detect the
+# flag and do the actual computation.
+if _run_btn:
+    st.session_state['_execute_run'] = 'single'
+    st.rerun()
+elif _multi_btn:
+    st.session_state['_execute_run'] = 'multi'
+    st.rerun()

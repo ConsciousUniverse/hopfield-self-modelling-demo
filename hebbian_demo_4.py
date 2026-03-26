@@ -1081,7 +1081,7 @@ def _render_results():
     # Blue dots analysis — purely descriptive
     if _conv_relax is not None:
         _conv_label = "early" if _conv_fraction < 0.33 else ("mid-run" if _conv_fraction < 0.66 else "late")
-        _desc_parts.append(
+        _conv_text = (
             f"The **blue dots** (with learning) converged **{_conv_label}** — "
             f"by around relaxation {_conv_relax} (roughly "
             f"{_conv_fraction * 100:.0f}% of the way through), the "
@@ -1091,8 +1091,31 @@ def _render_results():
             f"different local minimum; after it, the Hebbian weight "
             f"changes had reshaped the landscape enough that almost every "
             f"relaxation fell into the same basin. "
+        )
+        if _conv_fraction < 0.33:
+            _conv_text += (
+                f"Early convergence means learning reshaped the landscape "
+                f"quickly — most of the remaining relaxations were spent "
+                f"revisiting the same attractor rather than exploring "
+                f"further. Note that convergence timing varies "
+                f"substantially between runs even on the same problem, "
+                f"because it depends on which random trajectories the "
+                f"network happened to take. "
+            )
+        elif _conv_fraction >= 0.66:
+            _conv_text += (
+                f"Late convergence means the network spent most of its "
+                f"relaxation budget still exploring — many different "
+                f"attractors were sampled before the landscape settled. "
+                f"Note that convergence timing varies substantially "
+                f"between runs even on the same problem, because it "
+                f"depends on which random trajectories the network "
+                f"happened to take. "
+            )
+        _conv_text += (
             f"The overall improvement was **{_improvement_pct:+.1f}%**."
         )
+        _desc_parts.append(_conv_text)
     else:
         _desc_parts.append(
             f"The **blue dots** (with learning) did not clearly converge "
@@ -1105,10 +1128,15 @@ def _render_results():
             f"rate, to fully reshape the landscape."
         )
 
+    _desc_parts.append(
+        f"Watson et al.'s central insight is that learning works by "
+        f"extracting **regularities across many mediocre attempts**. "
+        f"The convergence point and the size of the improvement vary "
+        f"between random problem instances."
+    )
+
     if r.get('same_problem', False):
         _desc_parts.append(
-            f"Watson et al.'s central insight is that learning works by "
-            f"extracting **regularities across many mediocre attempts**. "
             f"This run used the **same constraint matrix** as the "
             f"previous experiment. The **Re-run same problem** button "
             f"isolates the stochasticity of the *search process* from "
@@ -1124,10 +1152,7 @@ def _render_results():
         )
     else:
         _desc_parts.append(
-            f"Watson et al.'s central insight is that learning works by "
-            f"extracting **regularities across many mediocre attempts**. "
-            f"The convergence point and the size of the improvement vary "
-            f"between random problem instances. Each run generates a "
+            f"Each run generates a "
             f"**different random constraint matrix**, so comparing "
             f"convergence speed against improvement % across runs is "
             f"apples-to-oranges: the improvement depends not just on how "

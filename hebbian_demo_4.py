@@ -890,7 +890,10 @@ def _render_results():
   
     # ── Modular problem metrics ──
     st.markdown("##### Results")
-    m1, m2, m3 = st.columns(3)
+    _mean_base = float(np.mean(energies_base))
+    _mean_learn = float(np.mean(energies_learn))
+    _mean_improvement_pct = (_mean_base - _mean_learn) / abs(_mean_base) * 100 if _mean_base != 0 else 0
+    m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
     with m2:
@@ -903,7 +906,9 @@ def _render_results():
         )
     with m3:
         improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
-        st.metric("Learning improvement", f"{improvement_pct:+.1f}%")
+        st.metric("Best-of-N improvement", f"{improvement_pct:+.1f}%")
+    with m4:
+        st.metric("Mean improvement", f"{_mean_improvement_pct:+.1f}%")
   
     st.markdown(
         "Each image below shows the **best state vector** the network "
@@ -1047,6 +1052,7 @@ def _render_results():
     _final_learn_mean = float(np.mean(_el[-_win:]))
     _final_learn_std = float(np.std(_el[-_win:]))
     _improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+    _mean_improvement_pct = (_base_mean_e - float(np.mean(_el))) / abs(_base_mean_e) * 100 if _base_mean_e != 0 else 0
 
     # Baseline trend (should be flat; flag if not)
     _base_first_half = float(np.mean(_eb[:num_relaxations // 2]))
@@ -1059,7 +1065,13 @@ def _render_results():
     _desc_parts.append(
         f"Each dot is one relaxation's final energy scored against the "
         f"original problem. There are **{num_relaxations}** dots per series "
-        f"— one for each relaxation."
+        f"— one for each relaxation. "
+        f"Two improvement metrics are reported: **best-of-N** compares "
+        f"the single lowest dot from each series; **mean** compares "
+        f"the average across all dots. When blue dots look consistently "
+        f"lower but best-of-N is small, it means baseline got lucky on "
+        f"one relaxation — the mean improvement captures learning's "
+        f"real advantage in *reliability*."
     )
 
     # Orange dots analysis
@@ -1113,7 +1125,8 @@ def _render_results():
                 f"happened to take. "
             )
         _conv_text += (
-            f"The overall improvement was **{_improvement_pct:+.1f}%**."
+            f"The best-of-N improvement was **{_improvement_pct:+.1f}%**; "
+            f"the mean improvement was **{_mean_improvement_pct:+.1f}%**."
         )
         _desc_parts.append(_conv_text)
     else:
@@ -1123,7 +1136,8 @@ def _render_results():
             f"relaxations. The final {_win} relaxations had mean energy "
             f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}), "
             f"compared to baseline std ≈ {_base_spread:.0f}. "
-            f"The improvement was **{_improvement_pct:+.1f}%**. "
+            f"The best-of-N improvement was **{_improvement_pct:+.1f}%**; "
+            f"the mean improvement was **{_mean_improvement_pct:+.1f}%**. "
             f"Learning may need more relaxations, or a slower learning "
             f"rate, to fully reshape the landscape."
         )
@@ -1232,6 +1246,7 @@ def _run_multi_trial(run):
   best_base_list = []
   best_learn_list = []
   improvements = []
+  mean_improvements = []
   learning_won_count = 0
 
   progress = st.progress(0, text="Running multi-trial analysis...")
@@ -1272,6 +1287,12 @@ def _run_multi_trial(run):
       imp = ((best_e_base - best_e_learn) / abs(best_e_base) * 100
              if best_e_base != 0 else 0.0)
       improvements.append(imp)
+
+      _mb = float(np.mean(_e_base))
+      _ml = float(np.mean(_e_learn))
+      mean_imp = ((_mb - _ml) / abs(_mb) * 100) if _mb != 0 else 0.0
+      mean_improvements.append(mean_imp)
+
       if best_e_learn < best_e_base:
           learning_won_count += 1
 
@@ -1289,6 +1310,7 @@ def _run_multi_trial(run):
       'best_base': np.array(best_base_list),
       'best_learn': np.array(best_learn_list),
       'improvements': np.array(improvements),
+      'mean_improvements': np.array(mean_improvements),
       'learning_won_count': learning_won_count,
   }
 
@@ -1304,6 +1326,7 @@ def _render_multi_trial():
     best_base = mt['best_base']
     best_learn = mt['best_learn']
     improvements = mt['improvements']
+    mean_improvements = mt.get('mean_improvements', improvements)
     won = mt['learning_won_count']
   
     tied = int(np.sum(best_learn == best_base))
@@ -1319,7 +1342,7 @@ def _render_multi_trial():
         f"**same** random initial conditions and update order."
     )
   
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("Learning won", f"{won} / {num_trials}",
                    delta=f"{won / num_trials * 100:.0f}%")
@@ -1328,21 +1351,30 @@ def _render_multi_trial():
     with c3:
         st.metric("Learning lost", f"{lost}")
     with c4:
-        st.metric("Mean improvement",
+        st.metric("Mean best-of-N impr.",
                    f"{np.mean(improvements):+.1f}%")
+    with c5:
+        st.metric("Mean mean impr.",
+                   f"{np.mean(mean_improvements):+.1f}%")
   
     # ── Histogram of improvements ──
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.hist(improvements, bins='auto', color='steelblue', edgecolor='white',
-            alpha=0.85)
-    ax.axvline(0, color='grey', linewidth=0.8, linestyle='--')
-    ax.axvline(np.mean(improvements), color='crimson', linewidth=1.2,
-               label=f"mean = {np.mean(improvements):+.1f}%")
-    ax.set_xlabel("Improvement (%)")
-    ax.set_ylabel("Number of trials")
-    ax.set_title("Distribution of learning improvement across trials")
-    ax.legend(fontsize=8)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3))
+    for ax, data, label in zip(
+        axes,
+        [improvements, mean_improvements],
+        ['Best-of-N improvement (%)', 'Mean improvement (%)'],
+    ):
+        ax.hist(data, bins='auto', color='steelblue', edgecolor='white',
+                alpha=0.85)
+        ax.axvline(0, color='grey', linewidth=0.8, linestyle='--')
+        ax.axvline(np.mean(data), color='crimson', linewidth=1.2,
+                   label=f"mean = {np.mean(data):+.1f}%")
+        ax.set_xlabel(label)
+        ax.set_ylabel("Number of trials")
+        ax.legend(fontsize=8)
+    axes[0].set_title("Best-of-N improvement across trials")
+    axes[1].set_title("Mean improvement across trials")
     fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
@@ -1351,7 +1383,9 @@ def _render_multi_trial():
         "Each bar counts how many trials fell in that improvement range. "
         "Positive values (right of the dashed line) mean learning found a "
         "lower-energy solution than the baseline; negative means it did "
-        "worse. The red line marks the mean."
+        "worse. The red line marks the mean. **Best-of-N** compares the "
+        "single best relaxation from each run; **Mean** compares the "
+        "average across all relaxations."
     )
   
     # ── Summary statistics table ──
@@ -1372,12 +1406,19 @@ def _render_multi_trial():
             f"{np.min(best_learn):.1f}",
             f"{np.max(best_learn):.1f}",
         ],
-        'Improvement %': [
+        'Improvement % (best-of-N)': [
             f"{np.mean(improvements):+.1f}",
             f"{np.median(improvements):+.1f}",
             f"{np.std(improvements):.1f}",
             f"{np.min(improvements):+.1f}",
             f"{np.max(improvements):+.1f}",
+        ],
+        'Improvement % (mean)': [
+            f"{np.mean(mean_improvements):+.1f}",
+            f"{np.median(mean_improvements):+.1f}",
+            f"{np.std(mean_improvements):.1f}",
+            f"{np.min(mean_improvements):+.1f}",
+            f"{np.max(mean_improvements):+.1f}",
         ],
     })
     st.dataframe(summary, hide_index=True, use_container_width=True)

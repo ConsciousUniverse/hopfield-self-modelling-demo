@@ -662,8 +662,26 @@ with st.sidebar:
     def _request_single():
         st.session_state.pop('results', None)
         st.session_state.pop('multi_trial_results', None)
+        st.session_state.pop('_held_alpha', None)
+        st.session_state.pop('_held_params', None)
 
     def _request_multi():
+        st.session_state.pop('results', None)
+        st.session_state.pop('multi_trial_results', None)
+        st.session_state.pop('_held_alpha', None)
+        st.session_state.pop('_held_params', None)
+
+    def _request_rerun_same():
+        # Keep alpha from previous results; clear results so page renders clean
+        prev = st.session_state.get('results')
+        if prev is not None and 'alpha' in prev:
+            st.session_state['_held_alpha'] = prev['alpha']
+            st.session_state['_held_params'] = {
+                k: prev[k] for k in (
+                    'N', 'n_modules', 'module_size', 'intra_strength',
+                    'inter_strength', 'positive_bias', 'n_intra', 'n_inter',
+                )
+            }
         st.session_state.pop('results', None)
         st.session_state.pop('multi_trial_results', None)
 
@@ -673,6 +691,30 @@ with st.sidebar:
         use_container_width=True,
         on_click=_request_single,
     )
+
+    # Show "Re-run same problem" only when we have a stored alpha
+    _prev = st.session_state.get('results')
+    _has_alpha = (
+        (isinstance(_prev, dict) and 'alpha' in _prev)
+        or '_held_alpha' in st.session_state
+    )
+    _rerun_btn = st.button(
+        "Re-run same problem",
+        use_container_width=True,
+        on_click=_request_rerun_same,
+        disabled=not _has_alpha,
+        help=(
+            "Run baseline + learning again on the **same** constraint "
+            "matrix from the last experiment. The relaxation "
+            "length (τ), learning rate (δ) and number of relaxations "
+            "are re-read from the sliders; the problem structure "
+            "stays fixed. Each relaxation still starts from a fresh "
+            "random state, so results will vary — this reveals how "
+            "much of the run-to-run difference is due to the random "
+            "search vs. the problem itself."
+        ),
+    )
+
     _multi_btn = st.button(
         "Run multi-trial analysis",
         use_container_width=True,
@@ -698,39 +740,53 @@ def state_to_img(state, n, px=10):
     return img.resize((n_side * px, n_side_y * px), resample=Image.NEAREST)
 
 # ─── RUN ────────────────────────────────────────────────────
-def _run_experiment(run):
+def _run_experiment(run, same_problem=False):
   if run:
-    # Read current slider values from session state (always fresh,
-    # even during a fragment-only re-run).
-    n_modules = st.session_state.n_modules
-    module_size = st.session_state.module_size
-    intra_strength = st.session_state.intra_strength
-    inter_strength = st.session_state.inter_strength
-    positive_bias = st.session_state.positive_bias
     num_relaxations = st.session_state.num_relaxations
     delta = st.session_state.delta
-
     tau_multiplier = st.session_state.tau_multiplier
 
-    with st.spinner("Generating problem..."):
-      if n_modules == 0:
-          # Unstructured: use module_size as total N, uniform strength
-          N = module_size
-          uniform_strength = (intra_strength + inter_strength) / 2
-          alpha = generate_modular_problem(
-              1, N, uniform_strength, uniform_strength,
-              positive_bias, RNG,
-          )
-          n_intra = 0
-          n_inter = N * (N - 1) // 2
-      else:
-          N = n_modules * module_size
-          alpha = generate_modular_problem(
-              n_modules, module_size, intra_strength,
-              inter_strength, positive_bias, RNG,
-          )
-          n_intra = n_modules * (module_size * (module_size - 1) // 2)
-          n_inter = N * (N - 1) // 2 - n_intra
+    if same_problem and '_held_alpha' in st.session_state:
+        # Re-use the constraint matrix from the previous run
+        alpha = st.session_state.pop('_held_alpha')
+        params = st.session_state.pop('_held_params', {})
+        N = params.get('N', alpha.shape[0])
+        n_modules = params.get('n_modules', 0)
+        module_size = params.get('module_size', N)
+        intra_strength = params.get('intra_strength', 0)
+        inter_strength = params.get('inter_strength', 0)
+        positive_bias = params.get('positive_bias', 0)
+        n_intra = params.get('n_intra', 0)
+        n_inter = params.get('n_inter', 0)
+    else:
+      same_problem = False
+      # Read current slider values from session state (always fresh,
+      # even during a fragment-only re-run).
+      n_modules = st.session_state.n_modules
+      module_size = st.session_state.module_size
+      intra_strength = st.session_state.intra_strength
+      inter_strength = st.session_state.inter_strength
+      positive_bias = st.session_state.positive_bias
+
+      with st.spinner("Generating problem..."):
+        if n_modules == 0:
+            # Unstructured: use module_size as total N, uniform strength
+            N = module_size
+            uniform_strength = (intra_strength + inter_strength) / 2
+            alpha = generate_modular_problem(
+                1, N, uniform_strength, uniform_strength,
+                positive_bias, RNG,
+            )
+            n_intra = 0
+            n_inter = N * (N - 1) // 2
+        else:
+            N = n_modules * module_size
+            alpha = generate_modular_problem(
+                n_modules, module_size, intra_strength,
+                inter_strength, positive_bias, RNG,
+            )
+            n_intra = n_modules * (module_size * (module_size - 1) // 2)
+            n_inter = N * (N - 1) // 2 - n_intra
 
     N_PAIRS = N * (N - 1) // 2
     TAU = tau_multiplier * N
@@ -769,6 +825,8 @@ def _run_experiment(run):
         'best_e_learn': best_e_learn,
         'best_s_base': best_s_base,
         'best_s_learn': best_s_learn,
+        'alpha': alpha,
+        'same_problem': same_problem,
     }
 
 
@@ -946,16 +1004,17 @@ def _render_results():
     ax_scatter.set_ylabel(r'$E^{\alpha}_0$  (true energy)')
     _tau_mult = r.get('tau_multiplier', st.session_state.get('tau_multiplier', 10))
     _delta_val = r.get('delta', st.session_state.get('delta', 0.00025))
+    _same_tag = "  |  same problem" if r.get('same_problem', False) else ""
     if r['n_modules'] == 0:
         _subtitle = (f"N={N}  |  unstructured  |  "
                      f"\u03c4={_tau_mult}\u00d7N={_tau_mult * N:,}  |  "
                      f"\u03b4={_delta_val}  |  "
-                     f"relaxations={num_relaxations}")
+                     f"relaxations={num_relaxations}{_same_tag}")
     else:
         _subtitle = (f"N={N} ({r['n_modules']}\u00d7{r['module_size']})  |  "
                      f"\u03c4={_tau_mult}\u00d7N={_tau_mult * N:,}  |  "
                      f"\u03b4={_delta_val}  |  "
-                     f"relaxations={num_relaxations}")
+                     f"relaxations={num_relaxations}{_same_tag}")
     ax_scatter.set_title('Attractor energy over the course of learning\n'
                          + _subtitle, fontsize=10)
     ax_scatter.legend(fontsize=8, loc='upper right')
@@ -1019,57 +1078,22 @@ def _render_results():
             f"particular problem instance."
         )
 
-    # Blue dots analysis — the key part
+    # Blue dots analysis — purely descriptive
     if _conv_relax is not None:
-        if _conv_fraction < 0.33:
-            _desc_parts.append(
-                f"The **blue dots** (with learning) converged **early** — "
-                f"by around relaxation {_conv_relax} (roughly "
-                f"{_conv_fraction * 100:.0f}% of the way through), the "
-                f"energies collapsed to a tight band near "
-                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
-                f"This means Hebbian learning quickly reinforced the first "
-                f"reliable pattern it encountered and locked in, reshaping "
-                f"the energy landscape so that almost every relaxation lands "
-                f"in the same deep basin. The flat tail looks impressive, "
-                f"but early lock-in means the system stopped exploring "
-                f"before it could discover whether a *better* arrangement "
-                f"existed. Because baseline also finds decent solutions for "
-                f"this problem instance, the relative improvement is modest "
-                f"(**{_improvement_pct:+.1f}%**)."
-            )
-        elif _conv_fraction < 0.66:
-            _desc_parts.append(
-                f"The **blue dots** (with learning) converged around "
-                f"relaxation {_conv_relax} — roughly "
-                f"**{_conv_fraction * 100:.0f}%** of the way through. "
-                f"The final energies cluster near "
-                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
-                f"Learning spent a moderate amount of time sampling diverse "
-                f"attractors before the accumulated Hebbian nudges "
-                f"reshaped the landscape enough to lock in. This balance "
-                f"between exploration and commitment produced an "
-                f"improvement of **{_improvement_pct:+.1f}%**."
-            )
-        else:
-            _desc_parts.append(
-                f"The **blue dots** (with learning) converged **late** — "
-                f"not until around relaxation {_conv_relax} "
-                f"({_conv_fraction * 100:.0f}% of the way through). "
-                f"The energies then settled near "
-                f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
-                f"This late convergence is typically a sign of **better "
-                f"generalisation**: for most of the run, each relaxation "
-                f"landed in a *different* local minimum, and each "
-                f"contributed a slightly different Hebbian nudge. This "
-                f"diversity meant the weights accumulated a richer picture "
-                f"of the problem's modular structure before committing. "
-                f"By the time convergence kicked in, the reshaped landscape "
-                f"channelled the network into a genuinely superior basin — "
-                f"producing an improvement of **{_improvement_pct:+.1f}%**."
-            )
+        _conv_label = "early" if _conv_fraction < 0.33 else ("mid-run" if _conv_fraction < 0.66 else "late")
+        _desc_parts.append(
+            f"The **blue dots** (with learning) converged **{_conv_label}** — "
+            f"by around relaxation {_conv_relax} (roughly "
+            f"{_conv_fraction * 100:.0f}% of the way through), the "
+            f"energies collapsed to a tight band near "
+            f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}). "
+            f"Before convergence, each relaxation was landing in a "
+            f"different local minimum; after it, the Hebbian weight "
+            f"changes had reshaped the landscape enough that almost every "
+            f"relaxation fell into the same basin. "
+            f"The overall improvement was **{_improvement_pct:+.1f}%**."
+        )
     else:
-        # No clear convergence detected
         _desc_parts.append(
             f"The **blue dots** (with learning) did not clearly converge "
             f"to a single energy level within {num_relaxations} "
@@ -1081,15 +1105,41 @@ def _render_results():
             f"rate, to fully reshape the landscape."
         )
 
-    # Watson's point
-    _desc_parts.append(
-        f"This illustrates Watson et al.'s central insight: learning works by "
-        f"extracting **regularities across many mediocre attempts**. "
-        f"It needs enough diverse experience before the signal "
-        f"overwhelms the noise. Fast lock-in = over-commitment to a "
-        f"local pattern; slow convergence = better generalisation from "
-        f"diverse experience."
-    )
+    if r.get('same_problem', False):
+        _desc_parts.append(
+            f"Watson et al.'s central insight is that learning works by "
+            f"extracting **regularities across many mediocre attempts**. "
+            f"This run used the **same constraint matrix** as the "
+            f"previous experiment. The **Re-run same problem** button "
+            f"isolates the stochasticity of the *search process* from "
+            f"the stochasticity of the *problem*: the constraint matrix "
+            f"is fixed, but each relaxation still starts from a fresh "
+            f"random state with a random update order, so results will "
+            f"vary between re-runs. Any difference in convergence speed "
+            f"or improvement % is therefore due to the random "
+            f"trajectories and the current settings (τ, δ, relaxations), "
+            f"not a different problem. Try varying the learning rate (δ) "
+            f"or number of relaxations and re-running to see how they "
+            f"affect performance on this specific problem."
+        )
+    else:
+        _desc_parts.append(
+            f"Watson et al.'s central insight is that learning works by "
+            f"extracting **regularities across many mediocre attempts**. "
+            f"The convergence point and the size of the improvement vary "
+            f"between random problem instances. Each run generates a "
+            f"**different random constraint matrix**, so comparing "
+            f"convergence speed against improvement % across runs is "
+            f"apples-to-oranges: the improvement depends not just on how "
+            f"well learning did, but on how hard the particular problem "
+            f"was for baseline. An 'easy' random problem can produce fast "
+            f"convergence *and* a large improvement; a 'hard' one can "
+            f"produce slow convergence *and* a small improvement. To "
+            f"fairly test whether more exploration helps, use the "
+            f"**Re-run same problem** button and vary the learning rate "
+            f"(δ) — or use the **multi-trial analysis**, which averages "
+            f"across many random instances to control for this variation."
+        )
 
     st.markdown("\n\n".join(_desc_parts))
   
@@ -1325,8 +1375,13 @@ def _render_multi_trial():
 _execute = st.session_state.pop('_execute_run', None)
 if _execute == 'single':
     _run_experiment(True)
+    st.rerun()
+elif _execute == 'same':
+    _run_experiment(True, same_problem=True)
+    st.rerun()
 elif _execute == 'multi':
     _run_multi_trial(True)
+    st.rerun()
 
 _render_results()
 _render_multi_trial()
@@ -1339,6 +1394,9 @@ _render_info_sections()
 # flag and do the actual computation.
 if _run_btn:
     st.session_state['_execute_run'] = 'single'
+    st.rerun()
+elif _rerun_btn:
+    st.session_state['_execute_run'] = 'same'
     st.rerun()
 elif _multi_btn:
     st.session_state['_execute_run'] = 'multi'

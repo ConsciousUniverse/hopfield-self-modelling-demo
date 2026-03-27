@@ -100,7 +100,7 @@ st.caption(
 def _render_intro():
     _n_mod = st.session_state.get("n_modules", 30)
     _mod_sz = st.session_state.get("module_size", 5)
-    _total = _n_mod * _mod_sz
+    _total = _n_mod * _mod_sz if _n_mod > 0 else _mod_sz
     _bias = st.session_state.get("positive_bias", 80)
     with st.expander("How it works — click to read the full explanation"):
         st.markdown(f"""
@@ -999,12 +999,21 @@ def _render_results():
   """)
 
     # ─── Scatter: energy over time ───────────────────────────
+    # Scale marker size and transparency so the plot stays readable
+    # even with tens of thousands of relaxations.  At 300 relaxations
+    # the defaults are s=12 / alpha=0.5; at 50,000 they shrink to
+    # s≈2 / alpha≈0.08 so individual dots remain distinguishable.
+    _dot_size = max(1.5, min(12, 3600 / num_relaxations))
+    _dot_alpha = max(0.06, min(0.5, 150 / num_relaxations))
+
     fig_scatter, ax_scatter = plt.subplots(figsize=(10, 4))
     xs = np.arange(1, num_relaxations + 1)
-    ax_scatter.scatter(xs, energies_base, s=12, alpha=0.5,
-                       color='#E8913A', label='No learning', zorder=2)
-    ax_scatter.scatter(xs, energies_learn, s=12, alpha=0.5,
-                       color='#2166AC', label='With learning', zorder=3)
+    ax_scatter.scatter(xs, energies_base, s=_dot_size, alpha=_dot_alpha,
+                       color='#E8913A', label='No learning', zorder=2,
+                       rasterized=num_relaxations > 2000)
+    ax_scatter.scatter(xs, energies_learn, s=_dot_size, alpha=_dot_alpha,
+                       color='#2166AC', label='With learning', zorder=3,
+                       rasterized=num_relaxations > 2000)
     ax_scatter.set_xlabel('Relaxation number')
     ax_scatter.set_ylabel(r'$E^{\alpha}_0$  (true energy)')
     _tau_mult = r.get('tau_multiplier', st.session_state.get('tau_multiplier', 10))

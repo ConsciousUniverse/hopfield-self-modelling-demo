@@ -26,10 +26,11 @@ import numpy as np
 # ─── RANDOM STATE ───────────────────────────────────────────
 
 def random_binary_state(num_switches: int, rng: np.random.Generator) -> np.ndarray:
-    """Generate a random state vector of +1 and -1 values.
+    """
+    Generate a random vector of +1 and -1 values, one for each switch.
 
-    Each switch is independently set to +1 or -1 with equal
-    probability.  This is the starting point for every relaxation.
+    Each switch is set randomly to either +1 (on) or -1 (off), with equal probability.
+    This is how we create a random starting point for the network to begin searching for solutions.
     """
     return 2 * rng.integers(0, 2, size=num_switches) - 1
 
@@ -37,7 +38,11 @@ def random_binary_state(num_switches: int, rng: np.random.Generator) -> np.ndarr
 # ─── PROBLEM GENERATION ────────────────────────────────────
 
 def random_sign(positive_probability: float, rng: np.random.Generator) -> float:
-    """Return +1.0 with the given probability, else -1.0."""
+    """Randomly return +1.0 or -1.0, biased by the given probability.
+
+    For example, if positive_probability is 0.8, then 80% of the time
+    the result will be +1.0, and 20% of the time it will be -1.0.
+    """
     return 1.0 if rng.random() < positive_probability else -1.0
 
 
@@ -45,8 +50,11 @@ def connection_strength(switch_i: int, switch_j: int, module_size: int,
                         intra_strength: float, inter_strength: float) -> float:
     """Return the connection magnitude for a pair of switches.
 
-    Switches in the same module get intra_strength (strong);
-    switches in different modules get inter_strength (weak).
+    The problem is divided into groups ("modules") of switches.
+    Switches within the same module are strongly connected (intra_strength),
+    while switches in different modules are weakly connected (inter_strength).
+    This modular structure is what makes the problem hard — the network must
+    discover these groups to solve it well.
     """
     same_module: bool = (switch_i // module_size) == (switch_j // module_size)
     return intra_strength if same_module else inter_strength
@@ -55,14 +63,17 @@ def connection_strength(switch_i: int, switch_j: int, module_size: int,
 def generate_modular_problem(n_modules: int, module_size: int, intra_strength: float,
                              inter_strength: float, positive_bias_pct: float,
                              rng: np.random.Generator) -> np.ndarray:
-    """Build a symmetric modular constraint matrix alpha.
+    """Build the constraint matrix ("alpha") that defines the optimisation problem.
 
-    alpha[i][j] encodes the preference between switches i and j:
-      positive → they prefer to agree (+1/+1 or -1/-1)
-      negative → they prefer to disagree
+    Each entry in the matrix describes the relationship between two switches:
+      - A positive value means the two switches prefer to be in the same state (both on or both off).
+      - A negative value means they prefer to be in opposite states.
 
-    The matrix is symmetric (alpha[i][j] == alpha[j][i]) with a
-    zero diagonal (no self-connections).
+    The matrix is symmetric: the relationship from switch A to B is the same as from B to A.
+    A switch has no relationship with itself (the diagonal is zero).
+
+    The 'positive_bias_pct' controls the balance: e.g. 80 means roughly 80% of
+    relationships will be "prefer to agree" and 20% will be "prefer to disagree".
     """
     num_switches: int = n_modules * module_size
     positive_prob: float = positive_bias_pct / 100.0
@@ -83,13 +94,14 @@ def generate_modular_problem(n_modules: int, module_size: int, intra_strength: f
 # ─── ENERGY ─────────────────────────────────────────────────
 
 def true_energy(state: np.ndarray, alpha: np.ndarray) -> float:
-    """Hopfield energy of a state scored against constraint matrix alpha.
+    """Score how well a given switch configuration satisfies the original constraints.
 
-    E = -0.5 * sum_ij alpha[i][j] * s[i] * s[j]
+    The "energy" is a single number summarising how good the solution is.
+    A more negative energy means more constraints are satisfied — so lower is better.
 
-    More negative = more constraints satisfied = better solution.
-    The energy is always computed against the *original* alpha,
-    even when the working weights W have been modified by learning.
+    Importantly, energy is always measured against the original problem (alpha),
+    never against the modified weights that Hebbian learning produces.
+    This ensures we are always measuring genuine solution quality.
     """
     return float(-0.5 * state @ alpha @ state)
 
@@ -97,21 +109,17 @@ def true_energy(state: np.ndarray, alpha: np.ndarray) -> float:
 # ─── LOCAL FIELD ────────────────────────────────────────────
 
 def local_field(weights: np.ndarray, state: np.ndarray, node: int) -> float:
-    """Compute the local field at a single node.
+    """Calculate the total influence on a single switch from all the other switches.
 
-    h_i = sum_j W[i][j] * s[j]
-
-    This is the "pressure" on node i: if h_i >= 0 the node wants
-    to be +1; if h_i < 0 it wants to be -1.
+    Each neighbouring switch exerts a push or pull (via the weights) on this switch.
+    The local field is the sum of all those influences.  If the total is positive,
+    the switch "wants" to be +1; if negative, it "wants" to be -1.
     """
     return weights[node] @ state
 
 
 def sign_of(field_value: float) -> int:
-    """Convert a local field value to a binary state: +1 or -1.
-
-    Ties (h == 0) go to +1, matching the standard convention.
-    """
+    """Convert a field value to a switch state: +1 if positive or zero, -1 if negative."""
     return 1 if field_value >= 0 else -1
 
 
@@ -119,13 +127,13 @@ def sign_of(field_value: float) -> int:
 
 def update_one_node(state: np.ndarray, weights: np.ndarray,
                     rng: np.random.Generator) -> int:
-    """Pick a random node and align it with its local field.
+    """Pick one switch at random and set it to whichever value (+1 or -1)
+    its neighbours are pushing it towards.
 
-    This is one asynchronous Hopfield update step (Watson Eq 1):
-      1. Choose a node uniformly at random.
-      2. Set s_i = sign(h_i).
+    This is the basic building block of how the network searches for solutions:
+    one switch at a time, it adjusts itself to better satisfy its local constraints.
 
-    Returns the index of the node that was updated.
+    Returns the index of the switch that was updated.
     """
     node: int = rng.integers(len(state))
     state[node] = sign_of(local_field(weights, state, node))
@@ -134,11 +142,12 @@ def update_one_node(state: np.ndarray, weights: np.ndarray,
 
 def relax(state: np.ndarray, weights: np.ndarray, tau: int,
           rng: np.random.Generator) -> np.ndarray:
-    """Run tau asynchronous update steps (relaxation to a local minimum).
+    """Let the network settle by updating tau randomly chosen switches in sequence.
 
-    The network settles by repeatedly aligning randomly chosen nodes
-    with their local fields.  After tau steps the state is typically
-    near a local energy minimum.
+    Each update nudges one switch towards a locally better configuration.
+    After tau steps, the network has typically settled into a stable state
+    (a "local minimum") — a solution that can't be improved by flipping
+    any single switch.
     """
     for _ in range(tau):
         update_one_node(state, weights, rng)
@@ -148,13 +157,15 @@ def relax(state: np.ndarray, weights: np.ndarray, tau: int,
 # ─── HEBBIAN LEARNING ──────────────────────────────────────
 
 def hebbian_update(weights: np.ndarray, state: np.ndarray, delta: float) -> None:
-    """Apply one step of Hebbian learning to the weight matrix.
+    """
+    Apply one step of Hebbian learning to the weight matrix.
 
-    W[i][j] += delta * s[i] * s[j]   for all i != j   (Watson Eq 3)
+    For every pair of switches, if they are in the same state (both +1 or both -1),
+    their connection is strengthened. If they are in opposite states, their connection is weakened.
+    This is the basic idea of "Hebbian learning": switches that fire together, wire together.
 
-    Pairs that currently agree get their connection strengthened;
-    pairs that disagree get it weakened.  The diagonal stays zero
-    (no self-connections in a Hopfield network).
+    The diagonal of the matrix (self-connections) is always kept at zero, because a switch
+    does not influence itself in this model.
     """
     weights += delta * np.outer(state, state)
     np.fill_diagonal(weights, 0)
@@ -162,10 +173,12 @@ def hebbian_update(weights: np.ndarray, state: np.ndarray, delta: float) -> None
 
 def batched_hebbian_update(weights: np.ndarray, state: np.ndarray,
                           delta: float, num_steps: int) -> None:
-    """Apply num_steps worth of identical Hebbian updates at once.
+    """
+    Apply several Hebbian learning steps all at once, as if we had repeated the same update multiple times.
 
-    Equivalent to calling hebbian_update() num_steps times with the
-    same state, but done in a single matrix operation for speed.
+    This is a speed optimization: instead of updating the weights every single time the state stays the same,
+    we "batch" (collect) those updates and apply them all together in one go. This is called "flushing" the batch.
+    Flushing means we take all the pending (unapplied) changes and write them to the weights at once.
     """
     if num_steps > 0:
         weights += (delta * num_steps) * np.outer(state, state)
@@ -174,17 +187,18 @@ def batched_hebbian_update(weights: np.ndarray, state: np.ndarray,
 
 def effective_local_field(weights: np.ndarray, state: np.ndarray, node: int,
                          delta: float, pending_steps: int) -> float:
-    """Local field at a node including unflushed Hebbian contributions.
+    """
+    Compute the "local field" (the total influence) on a given switch, including any learning updates
+    that have not yet been applied (not yet flushed).
 
-    When we batch Hebbian updates, we need to account for the
-    pending (not yet applied) weight changes when deciding how to
-    update a node.  The effective field is:
+    When we batch Hebbian updates, we keep track of how many updates are "pending" (not yet written to the weights).
+    This function calculates what the field would be if we had already applied those updates, without actually changing the weights yet.
 
-      h_i = W[i] . s  +  pending * delta * s[i] * (N - 1)
+    The formula adds together:
+        - the current influence from the weights
+        - the extra influence from the pending (unapplied) Hebbian updates
 
-    The second term is the contribution from the pending outer-product
-    updates (the diagonal term s[i]^2 = 1 is excluded because
-    self-connections are always zero).
+    This lets the network behave as if learning is happening instantly, even though we only update the weights in batches.
     """
     num_switches: int = len(state)
     base_field: float = weights[node] @ state
@@ -197,10 +211,11 @@ def effective_local_field(weights: np.ndarray, state: np.ndarray, node: int,
 def track_best(energy_value: float, state: np.ndarray,
                current_best_energy: float,
                current_best_state: np.ndarray | None) -> tuple[float, np.ndarray]:
-    """Update the best-known solution if the new one is better.
+    """Keep track of the best solution found so far.
 
-    Returns (best_energy, best_state) — either the existing best
-    or the new candidate if it has lower energy.
+    Compares a new candidate against the current best.  If the new one
+    has lower energy (i.e. is a better solution), it becomes the new best.
+    Otherwise the previous best is kept.
     """
     if energy_value < current_best_energy:
         return energy_value, state.copy()
@@ -212,16 +227,16 @@ def track_best(energy_value: float, state: np.ndarray,
 def run_baseline(alpha: np.ndarray, num_relaxations: int,
                  rng: np.random.Generator,
                  tau: int | None = None) -> tuple[list[float], float, np.ndarray, list[np.ndarray]]:
-    """Phase 1: repeated relaxation without learning.
+    """Phase 1: repeated relaxation WITHOUT learning (the control condition).
 
     For each relaxation:
-      1. Start from a random binary state.
-      2. Relax for tau steps (network settles to a local minimum).
-      3. Record the energy scored against the original alpha.
+      1. Start from a new random switch configuration.
+      2. Let the network settle for tau steps.
+      3. Score the resulting configuration against the original problem.
 
-    The weight matrix stays fixed at alpha throughout — there is
-    no learning, so each relaxation is an independent sample from
-    the network's attractor landscape.
+    The weights never change — no learning takes place — so every relaxation
+    is an independent attempt at solving the same fixed problem.  This gives
+    us a baseline to compare the learning condition against.
 
     Returns (energies, best_energy, best_state, all_states).
     """
@@ -254,20 +269,24 @@ def run_baseline(alpha: np.ndarray, num_relaxations: int,
 def run_with_learning(alpha: np.ndarray, num_relaxations: int, delta: float,
                       rng: np.random.Generator,
                       tau: int | None = None) -> tuple[list[float], float, np.ndarray, list[np.ndarray]]:
-    """Phase 2: repeated relaxation with concurrent Hebbian learning.
+    """Phase 2: repeated relaxation WITH concurrent Hebbian learning.
 
-    At every single state update during relaxation, Hebbian learning
-    is also applied (Watson Eq 3).  Over many relaxations, this
-    reshapes the energy landscape: pairs of switches that frequently
-    agree get stronger connections, funnelling future relaxations
-    towards better solutions.
+    This is the same as the baseline, except that the network also learns
+    while it searches.  At every single switch update during relaxation,
+    Hebbian learning adjusts the weights: switches that are in the same state
+    get a stronger connection, and switches in opposite states get a weaker one.
 
-    Optimisation: consecutive timesteps where the state doesn't
-    change are batched into a single outer-product update.  The
-    node update accounts for the pending Hebbian contribution
-    analytically via effective_local_field().
+    Over many relaxations, this gradually reshapes the problem: pairs of switches
+    that frequently agree get stronger connections, which channels future
+    relaxations towards better solutions.
 
-    Energy is always scored against the *original* alpha.
+    As a speed optimisation, when the state doesn't change between updates,
+    the learning steps are collected and applied in a single batch ("flushed")
+    only when the state finally does change.  The switch update takes these
+    pending changes into account so the result is identical to updating every step.
+
+    Energy is always scored against the *original* problem (alpha), not the
+    modified weights, so we are measuring genuine solution quality.
 
     Returns (energies, best_energy, best_state, all_states).
     """
@@ -289,20 +308,23 @@ def run_with_learning(alpha: np.ndarray, num_relaxations: int, delta: float,
             pending_steps += 1
             node: int = rng.integers(num_switches)
 
-            # Compute field including unflushed Hebbian changes.
+            # Calculate the influence on this node, including any learning updates
+            # that have not yet been applied to the weights (see above for explanation).
             h: float = effective_local_field(
                 weights, state, node, delta, pending_steps,
             )
             new_value: int = sign_of(h)
 
-            # Flush pending Hebbian updates only when the state
-            # actually changes — this is the batching optimisation.
+            # If the node's state would change, we "flush" (apply) all the pending
+            # Hebbian updates to the weights, then reset the pending counter.
+            # This batching makes the algorithm much faster, but the logic is the same as
+            # updating the weights every single time the state changes.
             if new_value != state[node]:
                 batched_hebbian_update(weights, state, delta, pending_steps)
                 pending_steps = 0
                 state[node] = new_value
 
-        # Flush any remaining pending updates after the relaxation.
+        # After finishing all updates for this relaxation, flush any remaining pending updates.
         batched_hebbian_update(weights, state, delta, pending_steps)
 
         e: float = true_energy(state, alpha)
@@ -318,23 +340,32 @@ def run_with_learning(alpha: np.ndarray, num_relaxations: int, delta: float,
 # ─── ANALYSIS ──────────────────────────────────────────────
 
 def count_unique_energy_levels(energies: list[float]) -> int:
-    """Count distinct energy levels (rounded to nearest integer)."""
+    """Count how many distinct solutions (energy levels) were found.
+
+    Energies are rounded to the nearest integer before comparing,
+    so very similar solutions are treated as the same.
+    """
     return len(set(int(round(e)) for e in energies))
 
 
 def running_minimum(values: list[float]) -> list[float]:
-    """Running minimum: result[i] = min(values[0], ..., values[i])."""
+    """Track the best (lowest) energy seen so far at each step.
+
+    The i-th entry is the minimum of all values from the start up to position i.
+    This shows how the best-known solution improves over the course of the experiment.
+    """
     return list(np.minimum.accumulate(values))
 
 
 def analyse_results(energies_base: list[float], energies_learn: list[float],
                     best_e_base: float, best_e_learn: float,
                     num_relaxations: int) -> dict[str, object]:
-    """Compute summary statistics from both experiment phases.
+    """Compare the baseline and learning results and produce summary statistics.
 
-    The 'tail' is the last 20% of learning relaxations — by this
-    point, learning has typically converged, so tail statistics
-    reflect the network's settled performance.
+    The 'tail' refers to the final 20% of learning relaxations.  By that point,
+    learning has typically settled, so tail statistics tell us how well the
+    network performs once it has finished adapting — rather than including
+    the early exploratory phase where it is still learning the problem structure.
     """
     tail_size: int = max(1, num_relaxations // 5)
     learning_tail: list[float] = energies_learn[-tail_size:]

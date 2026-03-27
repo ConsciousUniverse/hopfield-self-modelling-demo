@@ -616,7 +616,7 @@ with st.sidebar:
     NUM_RELAXATIONS = st.slider(
         "Relaxations per phase",
         min_value=100,
-        max_value=20000,
+        max_value=50000,
         step=50,
         key="num_relaxations",
         help=(

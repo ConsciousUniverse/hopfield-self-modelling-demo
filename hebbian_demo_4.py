@@ -1078,33 +1078,33 @@ def _render_results():
         f"— one for each relaxation. "
         f"Two improvement metrics are reported: **best-of-N** compares "
         f"the single lowest dot from each series; **mean** compares "
-        f"the average across all dots. When blue dots look consistently "
+        f"the average across all dots. When green dots look consistently "
         f"lower but best-of-N is small, it means baseline got lucky on "
         f"one relaxation — the mean improvement captures learning's "
         f"real advantage in *reliability*."
     )
 
-    # Orange dots analysis
+    # Burnt-orange dots analysis
     if _base_drift < _base_spread * 0.1:
         _desc_parts.append(
-            f"The **orange dots** (baseline) are scattered in a band around "
+            f"The **burnt-orange dots** (baseline) are scattered in a band around "
             f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}) with no trend "
             f"— as expected for fixed weights."
         )
     else:
         _desc_parts.append(
-            f"The **orange dots** (baseline) are centred around "
+            f"The **burnt-orange dots** (baseline) are centred around "
             f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}). "
             f"There is some drift between halves ({_base_first_half:.0f} → "
             f"{_base_second_half:.0f}), likely from randomness in this "
             f"particular problem instance."
         )
 
-    # Blue dots analysis — purely descriptive
+    # Green dots analysis — purely descriptive
     if _conv_relax is not None:
         _conv_label = "early" if _conv_fraction < 0.33 else ("mid-run" if _conv_fraction < 0.66 else "late")
         _conv_text = (
-            f"The **blue dots** (with learning) converged **{_conv_label}** — "
+            f"The **green dots** (with learning) converged **{_conv_label}** — "
             f"by around relaxation {_conv_relax} (roughly "
             f"{_conv_fraction * 100:.0f}% of the way through), the "
             f"energies collapsed to a tight band near "
@@ -1141,7 +1141,7 @@ def _render_results():
         _desc_parts.append(_conv_text)
     else:
         _desc_parts.append(
-            f"The **blue dots** (with learning) did not clearly converge "
+            f"The **green dots** (with learning) did not clearly converge "
             f"to a single energy level within {num_relaxations} "
             f"relaxations. The final {_win} relaxations had mean energy "
             f"**{_final_learn_mean:.0f}** (std ≈ {_final_learn_std:.1f}), "

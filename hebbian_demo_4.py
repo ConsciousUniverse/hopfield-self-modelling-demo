@@ -383,12 +383,15 @@ $E = -(-1 -1 +1) = +1$ -- higher energy, worse solution.
 """)
 
     with st.expander("Relaxation — letting the system settle"):
+        # Insert dynamic values safely without requiring f-strings inside LaTeX
+        _tau_m = st.session_state.get('tau_multiplier', 10)
+        _example_N = 150
         st.markdown(r"""
 **Relaxation** means letting the system settle on its own, with no
 outside intervention. At each step, **one switch is picked at random** and
 updated: it looks at all its neighbours' current states and the connection
 strengths, and flips (or stays) accordingly. This repeats for exactly
-$\tau = {st.session_state.get('tau_multiplier', 10)}N$ steps — e.g. {st.session_state.get('tau_multiplier', 10) * 150:,} steps for 150 switches.
+$\tau = """ + f"{_tau_m}" + r"""N$ steps — e.g. """ + f"{_tau_m * _example_N:,}" + r""" steps for """ + f"{_example_N}" + r""" switches.
 
 The update rule (Watson et al., 2011, Eq. 1):
 
@@ -402,8 +405,6 @@ This is **asynchronous** update — only one switch changes at a time, using
 the most up-to-date values of all its neighbours.
 
 **Example:** Starting from $s = [+1,\; -1,\; +1]$ (the bad state):
-
-Switch 1 is picked. It checks its neighbours:
 
 $$w_{12}\, s_2 + w_{13}\, s_3 = (+1)(-1) + (-1)(+1) = -2$$
 
@@ -521,10 +522,10 @@ with st.sidebar:
 
     st.subheader("Problem structure")
     _switches_slot = st.container()
-    N_MODULES = st.slider(
+    N_MODULES = st.number_input(
         "Number of modules",
         min_value=0,
-        max_value=60,
+        max_value=500,
         step=1,
         key="n_modules",
         help=(
@@ -545,7 +546,7 @@ with st.sidebar:
         MODULE_SIZE = st.number_input(
             _switches_label,
             min_value=2,
-            max_value=500,
+            max_value=5000,
             step=1,
             key="module_size",
             help=(
@@ -555,7 +556,7 @@ with st.sidebar:
                 "also affects how long each run takes."
             ),
         )
-    INTRA_STRENGTH = st.slider(
+    INTRA_STRENGTH = st.number_input(
         "Intra-module constraint strength",
         min_value=0.1,
         max_value=5.0,
@@ -569,7 +570,7 @@ with st.sidebar:
             "during settling."
         ),
     )
-    INTER_STRENGTH = st.slider(
+    INTER_STRENGTH = st.number_input(
         "Inter-module constraint strength",
         min_value=0.001,
         max_value=1.0,
@@ -583,7 +584,7 @@ with st.sidebar:
             "hard for local search and interesting for learning."
         ),
     )
-    POSITIVE_BIAS = st.slider(
+    POSITIVE_BIAS = st.number_input(
         "Positive constraint bias (%)",
         min_value=50,
         max_value=100,
@@ -600,10 +601,10 @@ with st.sidebar:
     )
 
     st.subheader("Experiment")
-    TAU_MULT = st.slider(
+    TAU_MULT = st.number_input(
         "Relaxation length multiplier",
         min_value=1,
-        max_value=50,
+        max_value=500,
         step=1,
         key="tau_multiplier",
         help=(
@@ -613,7 +614,7 @@ with st.sidebar:
             "each attempt, but each relaxation takes longer."
         ),
     )
-    NUM_RELAXATIONS = st.slider(
+    NUM_RELAXATIONS = st.number_input(
         "Relaxations per phase",
         min_value=100,
         max_value=50000,
@@ -626,7 +627,7 @@ with st.sidebar:
             "to explore, but take longer to run."
         ),
     )
-    DELTA = st.slider(
+    DELTA = st.number_input(
         "Learning rate (\u03b4)",
         min_value=0.00005,
         max_value=0.005,
@@ -644,7 +645,7 @@ with st.sidebar:
     )
 
     st.subheader("Multi-trial analysis")
-    NUM_TRIALS = st.slider(
+    NUM_TRIALS = st.number_input(
         "Number of trials",
         min_value=1,
         max_value=500,
@@ -1003,16 +1004,16 @@ def _render_results():
     # even with tens of thousands of relaxations.  At 300 relaxations
     # the defaults are s=12 / alpha=0.5; at 50,000 they shrink to
     # s≈2 / alpha≈0.08 so individual dots remain distinguishable.
-    _dot_size = max(1.5, min(12, 3600 / num_relaxations))
-    _dot_alpha = max(0.06, min(0.5, 150 / num_relaxations))
+    _dot_size = max(2, min(14, 4200 / num_relaxations))
+    _dot_alpha = max(0.25, min(0.7, 300 / num_relaxations))
 
     fig_scatter, ax_scatter = plt.subplots(figsize=(10, 4))
     xs = np.arange(1, num_relaxations + 1)
     ax_scatter.scatter(xs, energies_base, s=_dot_size, alpha=_dot_alpha,
-                       color='#E8913A', label='No learning', zorder=2,
+                       color='#D95F02', label='No learning', zorder=2,
                        rasterized=num_relaxations > 2000)
     ax_scatter.scatter(xs, energies_learn, s=_dot_size, alpha=_dot_alpha,
-                       color='#2166AC', label='With learning', zorder=3,
+                       color='#1B7837', label='With learning', zorder=3,
                        rasterized=num_relaxations > 2000)
     ax_scatter.set_xlabel('Relaxation number')
     ax_scatter.set_ylabel(r'$E^{\alpha}_0$  (true energy)')

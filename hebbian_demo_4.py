@@ -559,7 +559,7 @@ with st.sidebar:
     )
     POSITIVE_BIAS = st.number_input(
         "Positive constraint bias (%)",
-        min_value=50,
+        min_value=0,
         max_value=100,
         step=5,
         key="positive_bias",
@@ -582,7 +582,7 @@ with st.sidebar:
     NUM_RELAXATIONS = st.number_input(
         "Relaxations per phase",
         min_value=100,
-        max_value=50000,
+        max_value=1500000,
         step=50,
         key="num_relaxations",
     )

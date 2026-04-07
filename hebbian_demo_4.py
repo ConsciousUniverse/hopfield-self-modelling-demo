@@ -896,11 +896,12 @@ def _render_results():
     _mean_improvement_pct = (_mean_base - _mean_learn) / abs(_mean_base) * 100 if _mean_base != 0 else 0
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.metric("Baseline (no learning)", f"{best_e_base:.0f}")
+        st.metric("Baseline best", f"{best_e_base:.0f}",
+                  help="Lowest energy found without learning")
     with m2:
         delta_e = best_e_learn - best_e_base
         st.metric(
-            "With Hebbian learning",
+            "Learning best",
             f"{best_e_learn:.0f}",
             delta=f"{delta_e:.0f} vs baseline",
             delta_color="inverse",
@@ -910,6 +911,16 @@ def _render_results():
         st.metric("Best-of-N improvement", f"{improvement_pct:+.1f}%")
     with m4:
         st.metric("Mean improvement", f"{_mean_improvement_pct:+.1f}%")
+
+    m5, m6, m7, m8 = st.columns(4)
+    with m5:
+        st.metric("Baseline mean energy", f"{_mean_base:.0f}")
+    with m6:
+        st.metric("Learning mean energy", f"{_mean_learn:.0f}")
+    with m7:
+        st.metric("Baseline std", f"{float(np.std(energies_base)):.1f}")
+    with m8:
+        st.metric("Learning std", f"{float(np.std(energies_learn)):.1f}")
   
     st.markdown(
         "Each image below shows the **best state vector** the network "
@@ -1035,6 +1046,7 @@ def _render_results():
     ax_scatter.legend(fontsize=8, loc='upper right')
     ax_scatter.spines['top'].set_visible(False)
     ax_scatter.spines['right'].set_visible(False)
+
     fig_scatter.tight_layout()
     st.pyplot(fig_scatter)
     plt.close(fig_scatter)
@@ -1078,10 +1090,11 @@ def _render_results():
         f"— one for each relaxation. "
         f"Two improvement metrics are reported: **best-of-N** compares "
         f"the single lowest dot from each series; **mean** compares "
-        f"the average across all dots. When green dots look consistently "
-        f"lower but best-of-N is small, it means baseline got lucky on "
-        f"one relaxation — the mean improvement captures learning's "
-        f"real advantage in *reliability*."
+        f"the average across all dots. A large mean improvement with "
+        f"a small best-of-N improvement means learning reliably finds "
+        f"good solutions (the distribution tightens and shifts down), "
+        f"but the single best baseline relaxation happened to match "
+        f"learning's converged level."
     )
 
     # Burnt-orange dots analysis

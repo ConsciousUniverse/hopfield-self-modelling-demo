@@ -528,15 +528,6 @@ with st.sidebar:
         max_value=500,
         step=1,
         key="n_modules",
-        help=(
-            "Default **30**. "
-            "More modules means more inter-group coordination is needed, "
-            "making the problem harder for local search but giving "
-            "learning more structure to exploit. "
-            "Set to **0** for an unstructured problem (uniform connection "
-            "strengths, no groups) \u2014 this shows that modular structure "
-            "is what makes Hebbian learning effective."
-        ),
     )
     _switches_label = (
         "Number of switches (N)" if N_MODULES == 0
@@ -549,12 +540,6 @@ with st.sidebar:
             max_value=5000,
             step=1,
             key="module_size",
-            help=(
-                "Default **5**. "
-                "Larger modules create more internal structure within each "
-                "group. The total number of switches (modules \u00d7 size) "
-                "also affects how long each run takes."
-            ),
         )
     INTRA_STRENGTH = st.number_input(
         "Intra-module constraint strength",
@@ -563,12 +548,6 @@ with st.sidebar:
         step=0.1,
         format="%.1f",
         key="intra_strength",
-        help=(
-            "Default **1.0**. "
-            "Stronger intra-module constraints mean each group's "
-            "internal arrangement is resolved quickly and reliably "
-            "during settling."
-        ),
     )
     INTER_STRENGTH = st.number_input(
         "Inter-module constraint strength",
@@ -577,12 +556,6 @@ with st.sidebar:
         step=0.001,
         format="%.3f",
         key="inter_strength",
-        help=(
-            "Default **0.01**. "
-            "Weak inter-group constraints are individually negligible but "
-            "collectively significant \u2014 this is what makes the problem "
-            "hard for local search and interesting for learning."
-        ),
     )
     POSITIVE_BIAS = st.number_input(
         "Positive constraint bias (%)",
@@ -590,14 +563,6 @@ with st.sidebar:
         max_value=100,
         step=5,
         key="positive_bias",
-        help=(
-            "Default **80%**. "
-            "A bias toward positive (\"agree\") connections creates "
-            "consistency in the problem, increasing the likelihood "
-            "that local optima share common sub-patterns. "
-            "At 50% there is no bias and learning has little to "
-            "work with."
-        ),
     )
 
     st.subheader("Experiment")
@@ -620,12 +585,6 @@ with st.sidebar:
         max_value=50000,
         step=50,
         key="num_relaxations",
-        help=(
-            "Default **300**. "
-            "Both phases run this many times, so the comparison "
-            "is fair. More relaxations give the system more chances "
-            "to explore, but take longer to run."
-        ),
     )
     DELTA = st.number_input(
         "Learning rate (\u03b4)",
@@ -634,14 +593,6 @@ with st.sidebar:
         step=0.00005,
         format="%.5f",
         key="delta",
-        help=(
-            "Default **0.00025**. This is the *numerator*; the actual "
-            "per-update rate is \u03b4 / (\u03c4). "
-            "A tiny value means the network accumulates experience slowly "
-            "and samples many different solutions before committing \u2014 "
-            "this generally gives the best results. A larger value "
-            "risks locking onto a mediocre early solution."
-        ),
     )
 
     st.subheader("Multi-trial analysis")
@@ -651,13 +602,6 @@ with st.sidebar:
         max_value=500,
         step=1,
         key="num_trials",
-        help=(
-            "Default **100** (Watson et al., 2011). Each trial generates a new random "
-            "problem instance and runs both a baseline and a learning "
-            "experiment using the **same** random initial conditions and "
-            "update order. This lets us measure how reliably learning "
-            "outperforms the baseline across many different problems."
-        ),
     )
 
     def _request_single():
@@ -704,16 +648,6 @@ with st.sidebar:
         use_container_width=True,
         on_click=_request_rerun_same,
         disabled=not _has_alpha,
-        help=(
-            "Run baseline + learning again on the **same** constraint "
-            "matrix from the last experiment. The relaxation "
-            "length (τ), learning rate (δ) and number of relaxations "
-            "are re-read from the sliders; the problem structure "
-            "stays fixed. Each relaxation still starts from a fresh "
-            "random state, so results will vary — this reveals how "
-            "much of the run-to-run difference is due to the random "
-            "search vs. the problem itself."
-        ),
     )
 
     _multi_btn = st.button(
@@ -894,10 +828,10 @@ def _render_results():
     _mean_base = float(np.mean(energies_base))
     _mean_learn = float(np.mean(energies_learn))
     _mean_improvement_pct = (_mean_base - _mean_learn) / abs(_mean_base) * 100 if _mean_base != 0 else 0
-    m1, m2, m3, m4 = st.columns(4)
+    _best_improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+    m1, m2 = st.columns(2)
     with m1:
-        st.metric("Baseline best", f"{best_e_base:.0f}",
-                  help="Lowest energy found without learning")
+        st.metric("Baseline best", f"{best_e_base:.0f}")
     with m2:
         delta_e = best_e_learn - best_e_base
         st.metric(
@@ -906,21 +840,15 @@ def _render_results():
             delta=f"{delta_e:.0f} vs baseline",
             delta_color="inverse",
         )
-    with m3:
-        improvement_pct = (best_e_base - best_e_learn) / abs(best_e_base) * 100 if best_e_base != 0 else 0
-        st.metric("Best-of-N improvement", f"{improvement_pct:+.1f}%")
-    with m4:
-        st.metric("Mean improvement", f"{_mean_improvement_pct:+.1f}%")
-
     m5, m6, m7, m8 = st.columns(4)
     with m5:
-        st.metric("Baseline mean energy", f"{_mean_base:.0f}")
+        st.metric("Baseline mean", f"{_mean_base:.0f}")
     with m6:
-        st.metric("Learning mean energy", f"{_mean_learn:.0f}")
+        st.metric("Learning mean", f"{_mean_learn:.0f}")
     with m7:
-        st.metric("Baseline std", f"{float(np.std(energies_base)):.1f}")
+        st.metric("Best-of-N improvement", f"{_best_improvement_pct:+.1f}%")
     with m8:
-        st.metric("Learning std", f"{float(np.std(energies_learn)):.1f}")
+        st.metric("Mean improvement", f"{_mean_improvement_pct:+.1f}%")
   
     st.markdown(
         "Each image below shows the **best state vector** the network "
@@ -1043,7 +971,22 @@ def _render_results():
                      f"relaxations={num_relaxations}{_same_tag}")
     ax_scatter.set_title('Attractor energy over the course of learning\n'
                          + _subtitle, fontsize=10)
-    ax_scatter.legend(fontsize=8, loc='upper right')
+
+    # Add best/mean figures as text in the top-left of the plot area
+    _mean_base_e = float(np.mean(energies_base))
+    _mean_learn_e = float(np.mean(energies_learn))
+    _stats_text = (
+        f"Baseline:  best = {best_e_base:.0f}   mean = {_mean_base_e:.0f}\n"
+        f"Learning:  best = {best_e_learn:.0f}   mean = {_mean_learn_e:.0f}"
+    )
+    ax_scatter.text(0.01, 0.97, _stats_text, transform=ax_scatter.transAxes,
+                    fontsize=8, verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                              edgecolor='#cccccc', alpha=0.85))
+
+    leg = ax_scatter.legend(fontsize=8, loc='upper right')
+    for lh in leg.legend_handles:
+        lh.set_alpha(1.0)
     ax_scatter.spines['top'].set_visible(False)
     ax_scatter.spines['right'].set_visible(False)
 

@@ -955,7 +955,7 @@ def _render_results():
                        color='#1B7837', label='With learning', zorder=3,
                        rasterized=num_relaxations > 2000)
     ax_scatter.set_xlabel('Relaxation number')
-    ax_scatter.set_ylabel(r'$E^{\alpha}_0$  (true energy)')
+    ax_scatter.set_ylabel(r'$E_{0}^{\alpha}$  (true energy)')
     _tau_mult = r.get('tau_multiplier', st.session_state.get('tau_multiplier', 10))
     _delta_val = r.get('delta', st.session_state.get('delta', 0.00025))
     _same_tag = "  |  same problem" if r.get('same_problem', False) else ""
@@ -1040,16 +1040,16 @@ def _render_results():
         f"learning's converged level."
     )
 
-    # Burnt-orange dots analysis
+    # orange dots analysis
     if _base_drift < _base_spread * 0.1:
         _desc_parts.append(
-            f"The **burnt-orange dots** (baseline) are scattered in a band around "
+            f"The **orange dots** (baseline) are scattered in a band around "
             f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}) with no trend "
             f"— as expected for fixed weights."
         )
     else:
         _desc_parts.append(
-            f"The **burnt-orange dots** (baseline) are centred around "
+            f"The **orange dots** (baseline) are centred around "
             f"**{_base_mean_e:.0f}** (std ≈ {_base_spread:.0f}). "
             f"There is some drift between halves ({_base_first_half:.0f} → "
             f"{_base_second_half:.0f}), likely from randomness in this "

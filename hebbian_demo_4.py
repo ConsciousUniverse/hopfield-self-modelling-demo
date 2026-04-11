@@ -10,7 +10,10 @@ from hopfield_algorithm import (
     run_baseline,
     run_with_learning,
     analyse_results,
+    running_minimum,
 )
+
+from transformations_algorithm import run_selective, run_generative
 
 
 # ─── Watson Fig. 1 — real data version ──────────────────────
@@ -283,10 +286,10 @@ def _render_info_sections():
 
 # ─── PLAIN-ENGLISH GLOSSARY ─────────────────────────────────
 def _render_glossary():
-    _n_mod = st.session_state.get('n_modules', _WATSON_DEFAULTS['n_modules'])
-    _mod_sz = st.session_state.get('module_size', _WATSON_DEFAULTS['module_size'])
+    _n_mod = st.session_state.get('n_modules', 30)
+    _mod_sz = st.session_state.get('module_size', 5)
     _N = _n_mod * _mod_sz if _n_mod > 0 else _mod_sz
-    _tau_m = st.session_state.get('tau_multiplier', _WATSON_DEFAULTS['tau_multiplier'])
+    _tau_m = st.session_state.get('tau_multiplier', 10)
     _tau = _tau_m * _N
     with st.expander("Glossary — what the jargon means"):
         st.markdown(f"""
@@ -493,32 +496,74 @@ experience rather than simply memorising past results.
 
 
 # ─── USER CONTROLS ───────────────────────────────────────
-# ─── WATSON DEFAULTS ────────────────────────────────────────
-_WATSON_DEFAULTS = {
-    "n_modules": 30,
-    "module_size": 5,
-    "intra_strength": 1.0,
-    "inter_strength": 0.01,
-    "positive_bias": 80,
-    "num_relaxations": 300,
-    "tau_multiplier": 10,
-    "delta": 0.00025,
-    "num_trials": 100,
+# ─── EXPERIMENT DEFAULTS ────────────────────────────────────
+# Watson, Buckley & Mills (Complexity, 2011) — self-modelling
+# Watson, Mills & Buckley (Adaptive Behavior, 2011) — selective / generative
+_ALL_DEFAULTS = {
+    "self_modelling": {
+        "n_modules": 30, "module_size": 5,
+        "intra_strength": 1.0, "inter_strength": 0.01,
+        "positive_bias": 80, "num_relaxations": 300,
+        "tau_multiplier": 10, "delta": 0.00025,
+        "num_trials": 100,
+    },
+    "selective": {
+        "n_modules": 20, "module_size": 10,
+        "intra_strength": 1.0, "inter_strength": 0.01,
+        "positive_bias": 50, "num_relaxations": 1000,
+        "tau_multiplier": 10, "delta": 0.0015,
+        "num_trials": 100,
+    },
+    "generative": {
+        "n_modules": 20, "module_size": 10,
+        "intra_strength": 1.0, "inter_strength": 0.01,
+        "positive_bias": 50, "num_relaxations": 1000,
+        "tau_multiplier": 10, "delta": 0.0003,
+        "num_trials": 100,
+    },
 }
 
-# Initialise defaults once (before any widget is created)
-for _k, _v in _WATSON_DEFAULTS.items():
+_MODE_LABELS = {
+    "self_modelling": "Self-Modelling (rHN-0)",
+    "selective": "Selective Associations (rHN-S)",
+    "generative": "Generative Associations (rHN-G)",
+}
+
+# Initialise experiment mode and defaults once
+if "experiment_mode" not in st.session_state:
+    st.session_state["experiment_mode"] = "self_modelling"
+
+_active_defaults = _ALL_DEFAULTS[st.session_state["experiment_mode"]]
+
+for _k, _v in _active_defaults.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
-# Handle reset: apply defaults before widgets are instantiated
+# Handle reset: apply defaults for the CURRENT mode
 if st.session_state.get('_reset_defaults'):
-    for _k, _v in _WATSON_DEFAULTS.items():
+    for _k, _v in _active_defaults.items():
         st.session_state[_k] = _v
     st.session_state['_reset_defaults'] = False
 
+def _on_mode_change():
+    """When the experiment selector changes, load that mode's defaults."""
+    defaults = _ALL_DEFAULTS[st.session_state.experiment_mode]
+    for k, v in defaults.items():
+        st.session_state[k] = v
+
 with st.sidebar:
     st.header("Controls")
+
+    st.radio(
+        "Experiment",
+        options=["self_modelling", "selective", "generative"],
+        format_func=lambda x: _MODE_LABELS[x],
+        key="experiment_mode",
+        on_change=_on_mode_change,
+    )
+
+    _mode = st.session_state.experiment_mode
+    _is_self_mod = _mode == "self_modelling"
 
     st.subheader("Problem structure")
     _switches_slot = st.container()
@@ -572,12 +617,6 @@ with st.sidebar:
         max_value=500,
         step=1,
         key="tau_multiplier",
-        help=(
-            "Default **10**. "
-            "Each relaxation runs for this number × N steps. "
-            "Higher values give the network more time to settle "
-            "each attempt, but each relaxation takes longer."
-        ),
     )
     NUM_RELAXATIONS = st.number_input(
         "Relaxations per phase",
@@ -602,8 +641,10 @@ with st.sidebar:
         max_value=500,
         step=1,
         key="num_trials",
+        disabled=not _is_self_mod,
     )
 
+    # ── on-click callbacks ──
     def _request_single():
         st.session_state.pop('results', None)
         st.session_state.pop('multi_trial_results', None)
@@ -617,7 +658,6 @@ with st.sidebar:
         st.session_state.pop('_held_params', None)
 
     def _request_rerun_same():
-        # Keep alpha from previous results; clear results so page renders clean
         prev = st.session_state.get('results')
         if prev is not None and 'alpha' in prev:
             st.session_state['_held_alpha'] = prev['alpha']
@@ -630,33 +670,58 @@ with st.sidebar:
         st.session_state.pop('results', None)
         st.session_state.pop('multi_trial_results', None)
 
+    def _request_selective():
+        st.session_state.pop('sel_results', None)
+
+    def _request_generative():
+        st.session_state.pop('gen_results', None)
+
+    # ── mode-specific buttons ──
+    _run_btn = False
+    _rerun_btn = False
+    _multi_btn = False
+    _sel_btn = False
+    _gen_btn = False
+
     st.divider()
-    _run_btn = st.button(
-        "Run single experiment",
-        use_container_width=True,
-        on_click=_request_single,
-    )
 
-    # Show "Re-run same problem" only when we have a stored alpha
-    _prev = st.session_state.get('results')
-    _has_alpha = (
-        (isinstance(_prev, dict) and 'alpha' in _prev)
-        or '_held_alpha' in st.session_state
-    )
-    _rerun_btn = st.button(
-        "Re-run same problem",
-        use_container_width=True,
-        on_click=_request_rerun_same,
-        disabled=not _has_alpha,
-    )
+    if _is_self_mod:
+        _run_btn = st.button(
+            "Run single experiment",
+            use_container_width=True,
+            on_click=_request_single,
+        )
+        _prev = st.session_state.get('results')
+        _has_alpha = (
+            (isinstance(_prev, dict) and 'alpha' in _prev)
+            or '_held_alpha' in st.session_state
+        )
+        _rerun_btn = st.button(
+            "Re-run same problem",
+            use_container_width=True,
+            on_click=_request_rerun_same,
+            disabled=not _has_alpha,
+        )
+        _multi_btn = st.button(
+            "Run multi-trial analysis",
+            use_container_width=True,
+            on_click=_request_multi,
+        )
+    elif _mode == "selective":
+        _sel_btn = st.button(
+            "Run selective experiment",
+            use_container_width=True,
+            on_click=_request_selective,
+        )
+    else:
+        _gen_btn = st.button(
+            "Run generative experiment",
+            use_container_width=True,
+            on_click=_request_generative,
+        )
 
-    _multi_btn = st.button(
-        "Run multi-trial analysis",
-        use_container_width=True,
-        on_click=_request_multi,
-    )
     st.button(
-        "Reset to Watson defaults",
+        "Reset to paper defaults",
         use_container_width=True,
         on_click=lambda: st.session_state.update({'_reset_defaults': True}),
     )
@@ -1401,6 +1466,406 @@ def _render_multi_trial():
     )
   
   
+# ─── SELECTIVE EXPERIMENT (rHN-S) ─────────────────────────
+
+def _run_selective_experiment(run):
+  """Run baseline + rHN-S on the same problem."""
+  if not run:
+    return
+
+  num_relaxations = st.session_state.num_relaxations
+  delta = st.session_state.delta
+  tau_multiplier = st.session_state.tau_multiplier
+  n_modules = st.session_state.n_modules
+  module_size = st.session_state.module_size
+  intra_strength = st.session_state.intra_strength
+  inter_strength = st.session_state.inter_strength
+  positive_bias = st.session_state.positive_bias
+
+  with st.spinner("Generating problem..."):
+    if n_modules == 0:
+        N = module_size
+        uniform_strength = (intra_strength + inter_strength) / 2
+        alpha = generate_modular_problem(
+            1, N, uniform_strength, uniform_strength,
+            positive_bias, RNG,
+        )
+    else:
+        N = n_modules * module_size
+        alpha = generate_modular_problem(
+            n_modules, module_size, intra_strength,
+            inter_strength, positive_bias, RNG,
+        )
+
+  TAU = tau_multiplier * N
+
+  progress = st.progress(0, text="Running baseline (rHN-0)...")
+  energies_base, best_e_base, _, _ = run_baseline(
+      alpha, num_relaxations, RNG, tau=TAU,
+  )
+  progress.progress(50, text="Running selective (rHN-S)...")
+  energies_sel, best_e_sel, _, _ = run_selective(
+      alpha, num_relaxations, delta, RNG, tau=TAU,
+  )
+  progress.empty()
+
+  st.session_state._sel_run = st.session_state.get('_sel_run', 0) + 1
+
+  st.session_state.sel_results = {
+      'N': N, 'n_modules': n_modules, 'module_size': module_size,
+      'num_relaxations': num_relaxations,
+      'tau_multiplier': tau_multiplier, 'delta': delta,
+      'energies_base': energies_base, 'energies_sel': energies_sel,
+      'best_e_base': best_e_base, 'best_e_sel': best_e_sel,
+  }
+
+
+def _render_selective_intro():
+  st.caption(
+      "Demonstrating the selective-associations mechanism from "
+      "Watson, Mills & Buckley 2011 — *Transformations in the Scale "
+      "of Behaviour* "
+      "([Adaptive Behavior, 2011]"
+      "(https://doi.org/10.1177/1059712311412797))"
+  )
+  with st.expander("How it works — click to read the full explanation"):
+    st.markdown(r"""
+**Selective associations (rHN-S)** modify the *test* (selection) part
+of the generate-and-test search process.
+
+The network uses standard single-bit-flip exploration, but evaluates
+each candidate against a **modified energy function**:
+
+$$E' = H(S,\; \Omega + M)$$
+
+where $\Omega$ is the original constraint matrix and $M$ is a Hebbian
+associative memory learned from attractor states at the end of each
+relaxation. Learned weights are clipped to $[-1, 1]$ by $\gamma$.
+
+This enlarges the basins of attraction for frequently-visited (and
+typically lower-energy) solutions. Because low-energy attractors are
+visited more often, they are reinforced more, creating a positive
+feedback loop that can improve average solution quality.
+
+**Limitation:** rHN-S is wedded to single-variable state changes. It
+cannot rescale the search space — it warps the landscape but does not
+change the neighbourhood structure. For problems with hierarchical
+modular structure, this means rHN-S can improve reliability but
+generally cannot exceed the quality of the best solutions found by
+the unmodified baseline (rHN-0).
+
+Solutions are always *scored* against the original $\Omega$.
+""")
+
+
+def _render_selective_results():
+  """Render selective (rHN-S) results from session state."""
+  if 'sel_results' not in st.session_state:
+    return
+
+  _run_id = st.session_state.get('_sel_run', 0)
+  with st.expander(f"Selective experiment results (run {_run_id})", expanded=True):
+    r = st.session_state.sel_results
+    N = r['N']
+    num_relaxations = r['num_relaxations']
+    energies_base = r['energies_base']
+    energies_sel = r['energies_sel']
+    best_e_base = r['best_e_base']
+    best_e_sel = r['best_e_sel']
+
+    st.markdown("##### Results")
+    _mean_base = float(np.mean(energies_base))
+    _mean_sel = float(np.mean(energies_sel))
+    _best_imp = (best_e_base - best_e_sel) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+    _mean_imp = (_mean_base - _mean_sel) / abs(_mean_base) * 100 if _mean_base != 0 else 0
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Baseline best", f"{best_e_base:.0f}")
+        st.metric("Baseline mean", f"{_mean_base:.0f}")
+    with c2:
+        d = best_e_sel - best_e_base
+        st.metric("rHN-S best", f"{best_e_sel:.0f}",
+                  delta=f"{d:.0f} vs baseline", delta_color="inverse")
+        st.metric("rHN-S mean", f"{_mean_sel:.0f}")
+
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric("Best-of-N improvement", f"{_best_imp:+.1f}%")
+    with m2:
+        st.metric("Mean improvement", f"{_mean_imp:+.1f}%")
+
+    # ── Scatter plot ──
+    st.divider()
+    st.subheader("Attractor energy over relaxations")
+
+    _dot_size = max(2, min(14, 4200 / num_relaxations))
+    _dot_alpha = max(0.25, min(0.7, 300 / num_relaxations))
+    xs = np.arange(1, num_relaxations + 1)
+
+    fig_s, ax_s = plt.subplots(figsize=(10, 4))
+    ax_s.scatter(xs, energies_base, s=_dot_size, alpha=_dot_alpha,
+                 color='#D95F02', label='Baseline (rHN-0)', zorder=2,
+                 rasterized=num_relaxations > 2000)
+    ax_s.scatter(xs, energies_sel, s=_dot_size, alpha=_dot_alpha,
+                 color='#7570B3', label='Selective (rHN-S)', zorder=3,
+                 rasterized=num_relaxations > 2000)
+    ax_s.set_xlabel('Relaxation number')
+    ax_s.set_ylabel(r'$E_{0}^{\alpha}$  (true energy)')
+
+    _tau_m = r['tau_multiplier']
+    _delta_val = r['delta']
+    if r['n_modules'] == 0:
+        _subtitle = (f"N={N}  |  unstructured  |  "
+                     f"\u03c4={_tau_m}\u00d7N={_tau_m * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  relaxations={num_relaxations}")
+    else:
+        _subtitle = (f"N={N} ({r['n_modules']}\u00d7{r['module_size']})  |  "
+                     f"\u03c4={_tau_m}\u00d7N={_tau_m * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  relaxations={num_relaxations}")
+    ax_s.set_title('Baseline vs Selective (rHN-S)\n' + _subtitle, fontsize=10)
+
+    _stats_text = (
+        f"Baseline:   best = {best_e_base:.0f}   mean = {_mean_base:.0f}\n"
+        f"Selective:  best = {best_e_sel:.0f}   mean = {_mean_sel:.0f}"
+    )
+    ax_s.text(0.01, 0.97, _stats_text, transform=ax_s.transAxes,
+              fontsize=8, verticalalignment='top', fontfamily='monospace',
+              bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                        edgecolor='#cccccc', alpha=0.85))
+
+    leg = ax_s.legend(fontsize=8, loc='upper right')
+    for lh in leg.legend_handles:
+        lh.set_alpha(1.0)
+    ax_s.spines['top'].set_visible(False)
+    ax_s.spines['right'].set_visible(False)
+    fig_s.tight_layout()
+    st.pyplot(fig_s)
+    plt.close(fig_s)
+
+    # ── Running minimum ──
+    st.subheader("Running minimum (best energy so far)")
+    rm_base = running_minimum(energies_base)
+    rm_sel = running_minimum(energies_sel)
+    fig_rm, ax_rm = plt.subplots(figsize=(10, 4))
+    ax_rm.plot(xs, rm_base, color='#D95F02', label='Baseline (rHN-0)', linewidth=1.5)
+    ax_rm.plot(xs, rm_sel, color='#7570B3', label='Selective (rHN-S)', linewidth=1.5)
+    ax_rm.set_xlabel('Relaxation number')
+    ax_rm.set_ylabel(r'$E_{0}^{\alpha}$  (best so far)')
+    ax_rm.set_title('Running minimum — best-of-N over time')
+    ax_rm.legend(fontsize=8)
+    ax_rm.spines['top'].set_visible(False)
+    ax_rm.spines['right'].set_visible(False)
+    fig_rm.tight_layout()
+    st.pyplot(fig_rm)
+    plt.close(fig_rm)
+
+    st.caption(
+        "rHN-S uses end-of-relaxation Hebbian learning with "
+        "\u03b3-clipping to warp the energy surface. "
+        "Solutions are scored against the original \u03a9."
+    )
+
+
+# ─── GENERATIVE EXPERIMENT (rHN-G) ───────────────────────
+
+def _run_generative_experiment(run):
+  """Run baseline + rHN-G on the same problem."""
+  if not run:
+    return
+
+  num_relaxations = st.session_state.num_relaxations
+  delta = st.session_state.delta
+  tau_multiplier = st.session_state.tau_multiplier
+  n_modules = st.session_state.n_modules
+  module_size = st.session_state.module_size
+  intra_strength = st.session_state.intra_strength
+  inter_strength = st.session_state.inter_strength
+  positive_bias = st.session_state.positive_bias
+
+  with st.spinner("Generating problem..."):
+    if n_modules == 0:
+        N = module_size
+        uniform_strength = (intra_strength + inter_strength) / 2
+        alpha = generate_modular_problem(
+            1, N, uniform_strength, uniform_strength,
+            positive_bias, RNG,
+        )
+    else:
+        N = n_modules * module_size
+        alpha = generate_modular_problem(
+            n_modules, module_size, intra_strength,
+            inter_strength, positive_bias, RNG,
+        )
+
+  TAU = tau_multiplier * N
+
+  progress = st.progress(0, text="Running baseline (rHN-0)...")
+  energies_base, best_e_base, _, _ = run_baseline(
+      alpha, num_relaxations, RNG, tau=TAU,
+  )
+  progress.progress(50, text="Running generative (rHN-G)...")
+  energies_gen, best_e_gen, _, _ = run_generative(
+      alpha, num_relaxations, delta, RNG, tau=TAU,
+  )
+  progress.empty()
+
+  st.session_state._gen_run = st.session_state.get('_gen_run', 0) + 1
+
+  st.session_state.gen_results = {
+      'N': N, 'n_modules': n_modules, 'module_size': module_size,
+      'num_relaxations': num_relaxations,
+      'tau_multiplier': tau_multiplier, 'delta': delta,
+      'energies_base': energies_base, 'energies_gen': energies_gen,
+      'best_e_base': best_e_base, 'best_e_gen': best_e_gen,
+  }
+
+
+def _render_generative_intro():
+  st.caption(
+      "Demonstrating the generative-associations mechanism from "
+      "Watson, Mills & Buckley 2011 — *Transformations in the Scale "
+      "of Behaviour* "
+      "([Adaptive Behavior, 2011]"
+      "(https://doi.org/10.1177/1059712311412797))"
+  )
+  with st.expander("How it works — click to read the full explanation"):
+    st.markdown(r"""
+**Generative associations (rHN-G)** modify the *generate* (variation)
+part of the generate-and-test search process.
+
+When a randomly chosen node $X$ is updated, all nodes with
+sufficiently strong learned correlations are also set to appropriate
+values — creating coordinated **macro-mutations**. Specifically, a
+correlation matrix $C = I + M$ governs which nodes flip together;
+node $j$ is co-flipped if $|c_{Xj}| > r$, where $r$ is a random
+threshold drawn from $(\bar{a},\, 1]$ and $\bar{a}$ is the mean
+magnitude of entries in $M$.
+
+These multi-variable candidates are tested against the **original**
+energy function $E = H(S,\; \Omega)$. A candidate is accepted if and
+only if it reduces original energy.
+
+**The key capability:** rHN-G can discover modular problem structure
+and use it to search in combinations of modules rather than individual
+switches — a qualitative rescaling of the search space. Towards the
+end of learning, the network recalls combinations of multiple modules,
+essentially solving the macro-scale problem directly.
+
+This is the mechanism that achieves a genuine *transformation in the
+scale of behaviour* — moving from single-switch dynamics to module-level
+dynamics through self-organised Hebbian learning.
+""")
+
+
+def _render_generative_results():
+  """Render generative (rHN-G) results from session state."""
+  if 'gen_results' not in st.session_state:
+    return
+
+  _run_id = st.session_state.get('_gen_run', 0)
+  with st.expander(f"Generative experiment results (run {_run_id})", expanded=True):
+    r = st.session_state.gen_results
+    N = r['N']
+    num_relaxations = r['num_relaxations']
+    energies_base = r['energies_base']
+    energies_gen = r['energies_gen']
+    best_e_base = r['best_e_base']
+    best_e_gen = r['best_e_gen']
+
+    st.markdown("##### Results")
+    _mean_base = float(np.mean(energies_base))
+    _mean_gen = float(np.mean(energies_gen))
+    _best_imp = (best_e_base - best_e_gen) / abs(best_e_base) * 100 if best_e_base != 0 else 0
+    _mean_imp = (_mean_base - _mean_gen) / abs(_mean_base) * 100 if _mean_base != 0 else 0
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Baseline best", f"{best_e_base:.0f}")
+        st.metric("Baseline mean", f"{_mean_base:.0f}")
+    with c2:
+        d = best_e_gen - best_e_base
+        st.metric("rHN-G best", f"{best_e_gen:.0f}",
+                  delta=f"{d:.0f} vs baseline", delta_color="inverse")
+        st.metric("rHN-G mean", f"{_mean_gen:.0f}")
+
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric("Best-of-N improvement", f"{_best_imp:+.1f}%")
+    with m2:
+        st.metric("Mean improvement", f"{_mean_imp:+.1f}%")
+
+    # ── Scatter plot ──
+    st.divider()
+    st.subheader("Attractor energy over relaxations")
+
+    _dot_size = max(2, min(14, 4200 / num_relaxations))
+    _dot_alpha = max(0.25, min(0.7, 300 / num_relaxations))
+    xs = np.arange(1, num_relaxations + 1)
+
+    fig_s, ax_s = plt.subplots(figsize=(10, 4))
+    ax_s.scatter(xs, energies_base, s=_dot_size, alpha=_dot_alpha,
+                 color='#D95F02', label='Baseline (rHN-0)', zorder=2,
+                 rasterized=num_relaxations > 2000)
+    ax_s.scatter(xs, energies_gen, s=_dot_size, alpha=_dot_alpha,
+                 color='#1B7837', label='Generative (rHN-G)', zorder=3,
+                 rasterized=num_relaxations > 2000)
+    ax_s.set_xlabel('Relaxation number')
+    ax_s.set_ylabel(r'$E_{0}^{\alpha}$  (true energy)')
+
+    _tau_m = r['tau_multiplier']
+    _delta_val = r['delta']
+    if r['n_modules'] == 0:
+        _subtitle = (f"N={N}  |  unstructured  |  "
+                     f"\u03c4={_tau_m}\u00d7N={_tau_m * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  relaxations={num_relaxations}")
+    else:
+        _subtitle = (f"N={N} ({r['n_modules']}\u00d7{r['module_size']})  |  "
+                     f"\u03c4={_tau_m}\u00d7N={_tau_m * N:,}  |  "
+                     f"\u03b4={_delta_val}  |  relaxations={num_relaxations}")
+    ax_s.set_title('Baseline vs Generative (rHN-G)\n' + _subtitle, fontsize=10)
+
+    _stats_text = (
+        f"Baseline:    best = {best_e_base:.0f}   mean = {_mean_base:.0f}\n"
+        f"Generative:  best = {best_e_gen:.0f}   mean = {_mean_gen:.0f}"
+    )
+    ax_s.text(0.01, 0.97, _stats_text, transform=ax_s.transAxes,
+              fontsize=8, verticalalignment='top', fontfamily='monospace',
+              bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                        edgecolor='#cccccc', alpha=0.85))
+
+    leg = ax_s.legend(fontsize=8, loc='upper right')
+    for lh in leg.legend_handles:
+        lh.set_alpha(1.0)
+    ax_s.spines['top'].set_visible(False)
+    ax_s.spines['right'].set_visible(False)
+    fig_s.tight_layout()
+    st.pyplot(fig_s)
+    plt.close(fig_s)
+
+    # ── Running minimum ──
+    st.subheader("Running minimum (best energy so far)")
+    rm_base = running_minimum(energies_base)
+    rm_gen = running_minimum(energies_gen)
+    fig_rm, ax_rm = plt.subplots(figsize=(10, 4))
+    ax_rm.plot(xs, rm_base, color='#D95F02', label='Baseline (rHN-0)', linewidth=1.5)
+    ax_rm.plot(xs, rm_gen, color='#1B7837', label='Generative (rHN-G)', linewidth=1.5)
+    ax_rm.set_xlabel('Relaxation number')
+    ax_rm.set_ylabel(r'$E_{0}^{\alpha}$  (best so far)')
+    ax_rm.set_title('Running minimum — best-of-N over time')
+    ax_rm.legend(fontsize=8)
+    ax_rm.spines['top'].set_visible(False)
+    ax_rm.spines['right'].set_visible(False)
+    fig_rm.tight_layout()
+    st.pyplot(fig_rm)
+    plt.close(fig_rm)
+
+    st.caption(
+        "rHN-G uses end-of-relaxation Hebbian learning to produce "
+        "coordinated macro-mutations tested against the original \u03a9."
+    )
+
+
 # Detect pending computation from a PREVIOUS rerun (pass 2).
 # This runs BEFORE rendering so the spinner/progress show on the
 # (already clean) page.
@@ -1414,12 +1879,28 @@ elif _execute == 'same':
 elif _execute == 'multi':
     _run_multi_trial(True)
     st.rerun()
+elif _execute == 'selective':
+    _run_selective_experiment(True)
+    st.rerun()
+elif _execute == 'generative':
+    _run_generative_experiment(True)
+    st.rerun()
 
-_render_results()
-_render_multi_trial()
-_render_info_sections()
+# ─── RENDER ─────────────────────────────────────────────────
+_mode = st.session_state.experiment_mode
 
-# If EITHER button was pressed THIS rerun, the on_click already cleared
+if _mode == "self_modelling":
+    _render_results()
+    _render_multi_trial()
+    _render_info_sections()
+elif _mode == "selective":
+    _render_selective_intro()
+    _render_selective_results()
+else:
+    _render_generative_intro()
+    _render_generative_results()
+
+# If a button was pressed THIS rerun, the on_click already cleared
 # old results.  The page above rendered clean (no results).  Now we set
 # a flag and call st.rerun() — Streamlit sends the current (clean) page
 # to the browser BEFORE starting the next run, which will detect the
@@ -1432,4 +1913,10 @@ elif _rerun_btn:
     st.rerun()
 elif _multi_btn:
     st.session_state['_execute_run'] = 'multi'
+    st.rerun()
+elif _sel_btn:
+    st.session_state['_execute_run'] = 'selective'
+    st.rerun()
+elif _gen_btn:
+    st.session_state['_execute_run'] = 'generative'
     st.rerun()
